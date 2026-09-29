@@ -66,7 +66,7 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`.
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
 **Pinned, verified state:** `mlx 0.32.2`, `mlx-lm 0.31.3`,
-**`mlx-vlm 0.7.3`**, `transformers 5.15.1`, `numpy 2.5.2`,
+**`mlx-vlm 0.7.4`**, `transformers 5.15.1`, `numpy 2.5.2`,
 `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
 > **`0.7.1` is the one release this setup cannot run.** Skip it. It carries the
@@ -85,7 +85,7 @@ Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 > plain version again:
 >
 > ```sh
-> uv pip install --python ~/src/mlx/.venv/bin/python "mlx-vlm==0.7.3"
+> uv pip install --python ~/src/mlx/.venv/bin/python "mlx-vlm==0.7.4"
 > ```
 >
 > The upgrade is administrative. Diffed against the commit that had been
@@ -351,6 +351,24 @@ What changed on 2026-09-17, moving to main @ `548b09b`:
   `context_length`. It is reported, not fed into the budget arithmetic; the long
   note above `budget()` in the start script records why that was tried and
   reverted.
+
+What changed on 2026-09-29, moving to the `0.7.4` release:
+
+- **Nothing in the patch set.** All eight apply to `v0.7.4` without rejects;
+  dependencies are unchanged. On this setup's path the release brings `#2357`
+  (Qwen3.5 left-padding info is recomputed per decode step instead of cached),
+  `#2358` (temperature clamp and a rewritten top-p in the verify sampler) and
+  the tool-call fixes `#2344` / `#2365` / `#2369` -- a `qwen3_coder` call whose
+  schema has a boolean property (`"x": true`) was silently dropped before.
+- Re-measured, 26,690 tokens: with DFlash 2 cold 22.2 / 22.9 t/s, warm/cold
+  0.96; without a drafter 16.0 / 16.1 t/s, warm/cold 1.00. Greedy output
+  unchanged (`31b90e180e38`, checked cold on a fresh `STATE_DIR`). `#2210` is
+  still upstream; `0035` stays.
+- **`mlx 0.32.3` measured and not adopted.** Its D256 memory fix (`#4505`) is
+  for the non-NAX kernel (M4 and older); `#4416` makes default dispatch fused
+  only from `qL >= 1024`, so `0013` is still needed. Throughput unchanged,
+  greedy output shifts on a near-tie. The pin stays at `0.32.2`.
+  Details in [docs/upstream-2026-09-29.md](docs/upstream-2026-09-29.md).
 
 What changed on 2026-09-25, moving to the `0.7.3` release:
 

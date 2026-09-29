@@ -471,8 +471,12 @@ if [[ -n "$_ns_active" && -d "$_ns_active" ]]; then
 else
   _apc_used_gb=0
 fi
-# df AFTER the GC so that freed bytes are counted.
-_apc_free_gb=$(( $(df -k "${APC_DISK:h}" 2>/dev/null | tail -1 | awk '{print $4}') / 1048576 ))
+# df AFTER the GC so that freed bytes are counted. On the nearest EXISTING
+# ancestor: with a fresh STATE_DIR (mkdir comes later) df printed nothing and
+# the arithmetic aborted the script with "bad math expression" (2026-09-29).
+_apc_df_dir="${APC_DISK:h}"
+while [[ ! -d "$_apc_df_dir" ]]; do _apc_df_dir="${_apc_df_dir:h}"; done
+_apc_free_gb=$(( $(df -k "$_apc_df_dir" 2>/dev/null | tail -1 | awk '{print $4}') / 1048576 ))
 _apc_cap_max=$(( _apc_used_gb + _apc_free_gb - _APC_RESERVE_GB ))
 if [[ "$_apc_cap_max" -lt 10 ]]; then _apc_cap_max=10; fi
 if [[ "$APC_DISK_MAX_GB" -gt "$_apc_cap_max" ]]; then

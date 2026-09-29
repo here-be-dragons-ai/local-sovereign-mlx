@@ -42,7 +42,14 @@ for a in "$@"; do
   esac
 done
 
-# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-09-25).
+# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-09-29).
+#
+# 0.7.4 (2026-09-28, tagged at 0009367) over 0.7.3: on this setup's path #2357
+# (Qwen3.5 left padding), #2358 (sampler clamp / top-p) and the tool-call fixes
+# #2344/#2365/#2369. No dependency changes; all eight patches apply without
+# rejects. mlx stays 0.32.2: 0.32.3 was measured on the same day and brings
+# nothing for M5 / NAX / head_dim 256 that patch 0013 does not already cover.
+# Re-measured: docs/upstream-2026-09-29.md.
 #
 # 0.7.3 (2026-09-24, tagged at 573562d) over 0.7.2: for this setup it adds only
 # #2328 (the #2310 closure-cycle fix, measured harmless here). apc*.py,
@@ -105,7 +112,7 @@ done
 PINS=(
   "mlx==0.32.2"
   "mlx-lm==0.31.3"
-  "mlx-vlm==0.7.3"
+  "mlx-vlm==0.7.4"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
