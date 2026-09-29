@@ -75,3 +75,51 @@ that *shrinks* to one row, which `merge_rows` never sees. The two look
 complementary rather than competing. With a speculative drafter neither
 matters: the verify pass carries `capture_layer_ids`, which skips the
 single-row shortcut entirely.
+
+---
+
+## Reply on #2356 to fblissjr (2026-09-28: "Do you have the cold arm's memory too?")
+
+Status: **draft, not posted.** Measured 2026-09-29, raw output below the
+reply. Same setup as before, same version as the posted table (0.7.3, mlx
+0.32.2, the other seven local patches in place), one restart and a fresh
+`STATE_DIR` per arm, three pairs per arm.
+
+### Reply
+
+Now I do — and it corrects my table. The `active+cache` column there was the
+max over the whole request, sampled every 5 s, so a cold arm would have
+reported its prefill, and the 20.6 vs 22.2 GiB between this PR and #2336 was
+sampling noise. Re-measured at 0.5 s and split at the decode start:
+
+| arm | cold prefill | cold decode | restored decode | restored/cold tok/s |
+|---|---:|---:|---:|---:|
+| 0.7.3 | 22.2–22.9 + 2.3 | 20.58 + 1.65 | 20.84 + **12.1–12.7** | 0.656 |
+| 0.7.3 + #2356 | 22.2–22.9 + 2.3–4.6 | 20.58 + 1.65 | 20.58 + 1.65 | 1.003 |
+| 0.7.3 + #2336 | 22.2–23.0 + 2.2–2.3 | 20.58–20.67 + 1.65 | 20.59–20.68 + 1.65 | 1.009 |
+
+GiB, max `active + cache` per phase, 26,690-token prefix, 300 decoded tokens,
+no drafter.
+
+So with either PR the restored row decodes in **exactly** the cold arm's
+memory; neither has an edge. On 0.7.3 the excess is almost entirely allocator
+cache, not live arrays: active is only +0.26 GiB over cold, cache is +10.5 GiB —
+the per-token extract/merge copies being freed into the buffer cache. Not a
+leak, but it holds on to ~10 GiB of GPU memory for the whole decode at this
+length, and it's above the cold arm's prefill peak too.
+
+Greedy output is still bit-identical across all three arms, cold and restored.
+
+Agreed on the overlap: #2336 does catch the restored row as well, and I'd
+missed that `merge_rows` only runs at insert. For us the memory question comes
+out a tie, so the choice between them is about coverage (shrink-to-one) vs.
+the plain cache on any model and the skipped merge copy on restore.
+
+### Raw
+
+`./measure-apc-warm-decode.py --prompt-tokens 28000 --max-tokens 300 --repeat 3
+--phases`, server with `ENABLE_SPEC_DECODE=0 MEM_PROBE_INTERVAL=0.5`.
+Per arm, pairs 1–3, restored decode: 10.41 / 10.51 / 10.59 t/s (0.7.3),
+16.07 / 16.09 / 16.07 (#2356), 16.06 / 16.06 / 16.05 (#2336); cold 15.87–16.07
+everywhere. `/v1/cache/stats` after each arm: `exact_hits` 4, `exact_stores` 8,
+`memory_skips` 0.

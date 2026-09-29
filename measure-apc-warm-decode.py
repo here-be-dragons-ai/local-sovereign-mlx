@@ -45,9 +45,19 @@ CAREFUL, THE SERVER IS THE MEASUREMENT. It imports mlx_vlm once, at start.
 Applying or reverting a patch under a running server changes nothing about what
 that process executes; restart between arms. Put `caffeinate -dimsu` in front
 of the server, or the machine sleeps mid-generation and the rates are fiction.
+
+MEMORY PER PHASE (--phases). mem_sum is the max of active+cache over the WHOLE
+request window, so on a cold arm it is the prefill peak, not the decode. With
+--phases the samples are split at the decode start (request end minus
+out_n / decode rate) and reported as max active / max cache per phase. The
+server samples every MEM_PROBE_INTERVAL seconds (default 5, which leaves a
+300-token decode with ~4 samples); start it with MEM_PROBE_INTERVAL=0.5 for
+this. `peak` is mlx's process-lifetime peak and is never reset -- it says
+nothing about one arm.
 """
 
 import argparse
+import datetime
 import importlib.util
 import json
 import os
@@ -76,8 +86,10 @@ def _load_prompt_builder():
 
 
 _MEM = re.compile(
+    r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3}) .*?"
     r"mem active=(?P<active>[\d.]+) cache=(?P<cache>[\d.]+) sum=(?P<sum>[\d.]+) GiB"
-    r".*?peak=(?P<peak>[\d.]+) GiB"
+    r".*?peak=(?P<peak>[\d.]+) GiB",
+    re.M,
 )
 
 
@@ -112,6 +124,27 @@ class LogWindow:
             return None, None
         return max(sums), peaks[-1]
 
+    def collect_phases(self, split_epoch):
+        """{phase: (max active, max cache, max sum, n)} split at split_epoch."""
+        if self.offset is None:
+            return {}
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(self.offset)
+                chunk = fh.read().decode("utf-8", "replace")
+        except OSError:
+            return {}
+        out = {}
+        for m in _MEM.finditer(chunk):
+            ts = datetime.datetime.strptime(
+                m.group("ts"), "%Y-%m-%d %H:%M:%S,%f"
+            ).timestamp()
+            ph = "prefill" if ts < split_epoch else "decode"
+            a, c, t = (float(m.group(k)) for k in ("active", "cache", "sum"))
+            ma, mc, mt, n = out.get(ph, (0.0, 0.0, 0.0, 0))
+            out[ph] = (max(ma, a), max(mc, c), max(mt, t), n + 1)
+        return out
+
 
 def ask(url, model, prompt, max_tokens, timeout):
     body = json.dumps(
@@ -132,6 +165,7 @@ def ask(url, model, prompt, max_tokens, timeout):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read())
     data["_wall_s"] = time.monotonic() - t0
+    data["_end_epoch"] = time.time()
     return data
 
 
@@ -140,6 +174,10 @@ def run_arm(args, prompt, window):
     data = ask(args.url, args.model, prompt, args.max_tokens, args.timeout)
     mem_sum, mem_peak = window.collect()
     t = data.get("timings") or {}
+    phases = {}
+    if t.get("predicted_per_second") and t.get("predicted_n"):
+        split = data["_end_epoch"] - t["predicted_n"] / t["predicted_per_second"]
+        phases = window.collect_phases(split)
     usage = data.get("usage") or {}
     prompt_n = t.get("prompt_n", usage.get("prompt_tokens", 0))
     cache_n = t.get("cache_n", 0)
@@ -159,6 +197,7 @@ def run_arm(args, prompt, window):
         "wall_s": data["_wall_s"],
         "mem_sum": mem_sum,
         "mem_peak": mem_peak,
+        "phases": phases,
     }
 
 
@@ -184,6 +223,11 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=300)
     ap.add_argument("--repeat", type=int, default=2, help="cold/warm pairs")
     ap.add_argument("--timeout", type=float, default=1800.0)
+    ap.add_argument(
+        "--phases",
+        action="store_true",
+        help="also print max active/cache per phase (prefill, decode)",
+    )
     ap.add_argument(
         "--log",
         default=os.path.expanduser("~/.mlx-qwen38/logs/server.log"),
@@ -232,6 +276,14 @@ def main():
                 f"{_fmt(r['mem_sum'], '8.2f', '       -')} "
                 f"{_fmt(r['mem_peak'], '7.2f', '      -')}"
             )
+            if args.phases:
+                for ph in ("prefill", "decode"):
+                    if ph in r["phases"]:
+                        a, c, tot, n = r["phases"][ph]
+                        print(
+                            f"{'':>13}{ph:<8} active {a:6.2f}  cache {c:6.2f}"
+                            f"  sum {tot:6.2f} GiB  ({n} samples)"
+                        )
 
         if len(results) != 2:
             continue
