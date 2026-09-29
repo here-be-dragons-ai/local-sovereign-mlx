@@ -12,11 +12,12 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
-# STATE 2026-09-25: verified against mlx-vlm 0.7.3 (tagged at 573562d) and
+# STATE 2026-09-29: verified against mlx-vlm 0.7.4 (tagged at 0009367) and
 # mlx 0.32.2. EIGHT patches: the 09-17 set plus 0035 (upstream PR #2336). All
-# eight apply to 0.7.3 and to main @ ad4a3cc without rejects; the files they
-# touch did not change between 0.7.2 and 0.7.3.
-#   - Install: uv pip install "mlx-vlm==0.7.3"  (no --no-deps any more; 0.7.2
+# eight apply to 0.7.4 and to main @ 967bf90 without rejects. 0.7.4 changes
+# models/qwen3_5/language.py (#2357) and server/generation.py (#2358) next to
+# 0035 and 0012; neither hunk overlaps.
+#   - Install: uv pip install "mlx-vlm==0.7.4"  (no --no-deps any more; 0.7.2
 #     declares mlx>=0.32.2, a lower bound, so the exact mlx pin survives the
 #     same resolution. Under the previous GIT pin it did not, and patch 0013
 #     fell inert when uv dropped mlx to 0.32.1.)
