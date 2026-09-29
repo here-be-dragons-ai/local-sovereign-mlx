@@ -80,7 +80,10 @@ single-row shortcut entirely.
 
 ## Reply on #2356 to fblissjr (2026-09-28: "Do you have the cold arm's memory too?")
 
-Status: **draft, not posted.** Measured 2026-09-29, raw output below the
+Status: **posted 2026-09-29** as gtonic, verbatim from the Reply section:
+https://github.com/Blaizzy/mlx-vlm/pull/2356#issuecomment-5885658484
+
+Measured 2026-09-29, raw output below the
 reply. Same setup as before, same version as the posted table (0.7.3, mlx
 0.32.2, the other seven local patches in place), one restart and a fresh
 `STATE_DIR` per arm, three pairs per arm.
