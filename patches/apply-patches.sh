@@ -17,6 +17,11 @@
 # eight apply to 0.7.4 and to main @ 967bf90 without rejects. 0.7.4 changes
 # models/qwen3_5/language.py (#2357) and server/generation.py (#2358) next to
 # 0035 and 0012; neither hunk overlaps.
+#   - 2026-10-03: 0050 ADDS a model package, mlx_vlm/models/kolibri1/
+#     (Aleph-Alpha/Kolibri-1, model_type "kolibri1"), touches no existing file.
+#     Ported from aleph_alpha_inference/kolibri1.py; matches an independent
+#     numpy forward of the vLLM semantics to 1e-5 on CPU, cached decode
+#     across the sliding window included. Converted by ../convert-kolibri.py.
 #   - Install: uv pip install "mlx-vlm==0.7.4"  (no --no-deps any more; 0.7.2
 #     declares mlx>=0.32.2, a lower bound, so the exact mlx pin survives the
 #     same resolution. Under the previous GIT pin it did not, and patch 0013
