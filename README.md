@@ -1,7 +1,21 @@
-# Qwen3.8-27B (MLX 4bit) on Apple Silicon
+# local-sovereign-mlx
 
-Setup and start scripts for running **Qwen3.8-27B** as a local, OpenAI-compatible
-server (`mlx-vlm`) on an Apple Silicon Mac.
+Setup and start scripts for running open-weight models as a local,
+OpenAI-compatible server (`mlx-vlm`) on an Apple Silicon Mac. No cloud, no
+API key, nothing leaves the machine.
+
+| model | weights | machine | decode | start |
+|---|---|---|---|---|
+| **Qwen3.8-27B** (dense, 4 bit) | 15.0 GiB | 32 GB and up | 17.5–41.5 t/s | `./start-mlx_qwen3.8.sh` |
+| **Kolibri 1** (Aleph Alpha, 78B-A3.5B MoE, 3/6 bit) | 32.8 GiB | 48 GB | ~70 t/s | `./start-mlx_kolibri.sh` |
+
+Both serve on `127.0.0.1:8888`, **one at a time** -- they do not fit into
+memory together. Most of this README is about Qwen3.8-27B, the setup's
+original and most-tuned model; Kolibri has [its own section](#kolibri-1).
+
+---
+
+## Qwen3.8-27B: memory
 
 The weights (14.95 GiB) are not the problem. The bottleneck is the KV cache at
 **64 KiB per token**, paid once per copy (the running sequence plus every
@@ -24,10 +38,10 @@ macOS 26.
 
 | | |
 |---|---|
-| Hardware | Apple Silicon (arm64), ≥ 32 GB unified memory |
+| Hardware | Apple Silicon (arm64), ≥ 32 GB unified memory; Kolibri 1: 48 GB |
 | macOS | current, with Xcode Command Line Tools (`xcode-select --install`) |
-| Disk | ~20 GB for model + drafter, plus up to 80 GB for the SSD prefix cache |
-| Network | one-off ~15 GB download from HuggingFace |
+| Disk | Qwen ~20 GB for model + drafter, Kolibri ~36 GB; plus up to 80 GB for the SSD prefix cache |
+| Network | one-off download from HuggingFace: Qwen ~15 GB, Kolibri ~35 GB |
 
 Xcode.app plus the Metal toolchain is needed **only** for the optional mlx source
 build ([docs/build-mlx.md](docs/build-mlx.md)). Everything runs without it.
@@ -37,30 +51,35 @@ build ([docs/build-mlx.md](docs/build-mlx.md)). Everything runs without it.
 ## Installation
 
 ```sh
-git clone https://github.com/here-be-dragons-ai/mlx-qwen38-apple-silicon.git
-cd mlx-qwen38-apple-silicon
+git clone https://github.com/here-be-dragons-ai/local-sovereign-mlx.git
+cd local-sovereign-mlx
 
 # 1. Software + model weights (idempotent, downloads resume)
-./install-prereqs.sh
+./install-prereqs.sh                  # Qwen3.8-27B (default)
+./install-prereqs.sh --model kolibri  # Kolibri 1 (48 GB only)
+./install-prereqs.sh --model all      # both
 
 # 2. Raise the GPU wired limit -- the most important step
 sudo ./set-iogpu-wired-limit.sh
 
 # 3. Start the server (127.0.0.1:8888)
-./start-mlx_qwen3.8.sh
+./start-mlx_qwen3.8.sh                # or ./start-mlx_kolibri.sh
 ```
 
-On 32 GB, step 2 is the difference between ~23k and ~48k usable context. The
-setup runs without it -- `PROFILE=auto` detects that and switches to `lean`.
+Kolibri needs step 2 on any machine (48 GB, 40960). On 32 GB, for Qwen, step 2
+is the difference between ~23k and ~48k usable context. Qwen runs without
+it -- `PROFILE=auto` detects that and switches to `lean`.
 
 `install-prereqs.sh` creates or verifies: Xcode CLT → [uv](https://astral.sh/uv)
 → venv under `~/src/mlx/.venv` (Python 3.12) → mlx-vlm + dependencies → Metal
-self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`.
+self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
+(Kolibri: `~/.mlx-kolibri/{logs,apc}`).
 
 | option | effect |
 |---|---|
+| `--model qwen\|kolibri\|all` | which weights to download (default `qwen`) |
 | `--check` | verify only, change nothing |
-| `--skip-model` | software yes, 15 GB download no |
+| `--skip-model` | software yes, model download no |
 | `--latest` | newest instead of the pinned versions |
 
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
@@ -150,7 +169,7 @@ Verify with `sysctl iogpu.wired_limit_mb`; preview with
 
 ---
 
-## Operation
+## Qwen3.8-27B: operation
 
 ```sh
 ./start-mlx_qwen3.8.sh                        # PROFILE=auto
@@ -206,7 +225,7 @@ the log are authoritative. Details in [docs/memory.md](docs/memory.md).
 
 ---
 
-## Client configuration
+## Qwen3.8-27B: client configuration
 
 OpenAI chat completions on `http://localhost:8888/v1`. Two rules: **model name =
 alias** and **context ≤ budget**.
@@ -256,7 +275,7 @@ does not match the alias. Without the variable the check is inert.
 
 ---
 
-## Speed to expect
+## Qwen3.8-27B: speed to expect
 
 Dense: every decode step reads ~15 GiB, so this is memory bandwidth.
 
@@ -277,13 +296,110 @@ SSD tier are a precondition rather than an optimisation: measured 89,630 ms →
 
 ---
 
+## Kolibri 1
+
+[Aleph-Alpha/Kolibri-1](https://huggingface.co/Aleph-Alpha/Kolibri-1): a
+78B-parameter mixture-of-experts reasoning model for German and English, 3.5B
+parameters active per token, Apache 2.0. Checkpoint:
+[`here-be-dragons-ai/Kolibri-1-MLX-3bit`](https://huggingface.co/here-be-dragons-ai/Kolibri-1-MLX-3bit),
+made by `convert-kolibri.py` from the FP8 release -- routed experts 3 bit,
+attention / shared expert / embedding / LM head 6 bit, router bf16. 3.61 bits
+per weight, 33 GiB. Uniform 4 bit would be ~44 GB and does not fit.
+
+mlx-vlm does not carry the model yet. Patch `0050` adds
+`mlx_vlm/models/kolibri1`, ported from Aleph Alpha's vLLM plugin and checked
+against a numpy forward of the vLLM semantics to 1e-5 on CPU. Upstream PR:
+`#2424`; `docs/upstream-kolibri1.patch` is the same model for plain mlx-vlm
+main.
+
+**Requirements:** 48 GB and `iogpu.wired_limit_mb=40960`. The start script
+refuses below that: the macOS default working set (32 GiB) cannot hold the
+weights.
+
+```sh
+./install-prereqs.sh --model kolibri   # 33 GiB download + patch 0050
+sudo ./set-iogpu-wired-limit.sh        # 40960 on 48 GB
+./start-mlx_kolibri.sh                 # server, 127.0.0.1:8888
+./chat-kolibri.sh                      # or: terminal chat, no server
+```
+
+To build the checkpoint yourself from the FP8 release instead of downloading
+it:
+
+```sh
+./download-mlx-model.sh Aleph-Alpha/Kolibri-1 ~/src/mlx/models/Kolibri-1-FP8
+./convert-kolibri.py ~/src/mlx/models/Kolibri-1-FP8 ~/src/mlx/models/Kolibri-1-MLX-3bit
+```
+
+**Memory.** Only the 10 full-attention layers grow with the context, ~20 KiB
+per token in f16; the 40 sliding-window layers hold 513 tokens each. 96k
+tokens of context cost ~1.9 GiB, so the context is not the constraint here --
+the weights are. Measured peak on short prompts: 35.3 GB.
+
+**Speed** (M5 Pro / 48 GB, mlx-vlm 0.7.4, mlx 0.32.2, 2026-10-03):
+
+| context | decode | prefill |
+|---|---|---|
+| short | ~70 t/s | |
+| 23k | 57 t/s | ~1570 t/s |
+| 96k | 40 t/s | ~1020 t/s |
+
+No drafter exists for this model, and at 3.5B active parameters decode is
+not the bottleneck. Exact APC works on its mixed full/sliding cache: a 15.5k
+conversation's follow-up turn took 1.5 s instead of 20.3 s cold.
+
+| variable | default | effect |
+|---|---|---|
+| `MODEL_ALIAS` | `Kolibri-1-local` | **must** match the model name in the request |
+| `ENABLE_APC` / `APC_ENTRIES` | `1` / `2` | prefix cache, snapshots kept warm |
+| `APC_DISK_MAX_GB` | `40` | SSD tier cap |
+| `KV_BITS` | empty (f16) | the KV cache is small; not needed |
+| `PREFILL_STEP` | `2048` | |
+| `BIND_HOST` / `PORT` | `127.0.0.1` / `8888` | |
+| `STATE_DIR` | `~/.mlx-kolibri` | log and SSD prefix cache |
+
+**Client configuration:**
+
+```yaml
+model:
+  default: Kolibri-1-local
+  base_url: http://localhost:8888/v1
+  api_key: sk-local
+  context_length: 98304
+  max_tokens: 16384
+  extra_body:
+    reasoning_effort: low
+```
+
+- `reasoning_effort` is `none` / `low` / `medium` / `high`, or
+  `enable_thinking`, both on the **top level** of the request. Inside
+  `chat_template_kwargs` the server ignores them. A request with neither does
+  not think. The thinking comes back in `reasoning`, separate from `content`.
+- Sampling per the model card: `temperature 1.0`, `top_p 0.97`, `top_k 128`.
+- Tool calls go through the `json_tools` parser (`<tool_call>` + JSON).
+  Verified: single and parallel calls, nested and boolean arguments, the
+  tool-result round trip, streaming. Unprompted, the model prefers one call
+  per turn.
+- `context_length` 98304 is what was measured (needles found at 23k and
+  96k). The model's limit is 262144; beyond 96k is untested here.
+
+`chat-kolibri.sh` loads the model into its own process: `/think
+none|low|medium|high`, `/show on|off`, `/temp`, `/system`, `/reset`, `"""` for
+multi-line input. The KV cache is kept across turns; changing `/think`
+re-prefills the conversation, because the effort is part of Kolibri's system
+prompt.
+
+---
+
 ## Patches
 
-Eight patches against `site-packages`, applied by `patches/apply-patches.sh`
+Nine patches against `site-packages`, applied by `patches/apply-patches.sh`
 (idempotent, `--check` / `--revert`). **They vanish on every
 `pip install -U mlx-vlm`** -- run it again afterwards.
 
-Seven are **local work**. One is a cherry-picked foreign PR again: `0035` is
+Seven are **local work** for Qwen3.8-27B. `0050` adds the Kolibri 1 model
+(see [Kolibri 1](#kolibri-1)); it comes out when upstream merges `#2424`. One
+is a cherry-picked foreign PR again: `0035` is
 upstream `#2336` and fixes `#2210` (see below). It comes out when upstream merges
 it -- `apply-patches.sh` reports `CONFLICT` then.
 
@@ -421,6 +537,8 @@ curl -s localhost:8888/metrics | python3 -m json.tool | rg "stored_tokens|restor
 # APC disk tier, per namespace
 du -sh ~/.mlx-qwen38/apc/*/
 
+# Kolibri: same commands, log and APC under ~/.mlx-kolibri
+
 # Did the machine fall asleep mid-request?
 pmset -g log | grep -E "Entering Sleep state|Wake Requests" | tail -5
 ```
@@ -453,6 +571,7 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | [docs/drafter.md](docs/drafter.md) | DFlash 2 vs MTP, measurements, patch dependency |
 | [docs/build-mlx.md](docs/build-mlx.md) | building mlx 0.32.2 for fused `head_dim 256` |
 | [docs/flash-next.md](docs/flash-next.md) | Qwen3.8-Flash-Next (177B) on 48 GB: how to spot a broken conversion, external PLE, expert offloading, why it lands at 4 tok/s |
+| `docs/upstream-kolibri1.patch` | Kolibri 1 for plain mlx-vlm main (upstream PR `#2424`) |
 | `patches/apply-patches.sh` | the patch set, each with its measurement |
 
 ---
@@ -462,7 +581,10 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | file | purpose |
 |---|---|
 | `install-prereqs.sh` | complete setup from a fresh macOS, idempotent |
-| `start-mlx_qwen3.8.sh` | server start, profiles, live budget calculation |
+| `start-mlx_qwen3.8.sh` | Qwen3.8-27B server start, profiles, live budget calculation |
+| `start-mlx_kolibri.sh` | Kolibri 1 server start |
+| `chat-kolibri.sh` | Kolibri 1 terminal chat, no server |
+| `convert-kolibri.py` | Kolibri 1 FP8 release → mixed 3/6-bit MLX checkpoint |
 | `watchdog-mlx_qwen3.8.sh` | restarts the server before memory fills up |
 | `download-mlx-model.sh` | resumable HuggingFace downloader, with size check |
 | `convert-dflash2-drafter.py` | quantizes the DFlash 2 drafter (bf16 → 4bit) |
@@ -478,7 +600,7 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 ## Where the numbers come from
 
 All values marked "measured" come from an **M5 Pro / 48 GB** machine (mlx-vlm
-0.6.13/0.6.15, Qwen3.8-27B-4bit, `temperature=0`). The memory calculation is
+0.6.13/0.6.15, Qwen3.8-27B-4bit, `temperature=0`; Kolibri 1 with mlx-vlm 0.7.4). The memory calculation is
 arithmetic from `config.json` and the file sizes and holds on any machine; the
 throughput figures for 32 GB are estimates scaled via memory bandwidth, and
 marked as such.

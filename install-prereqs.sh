@@ -1,15 +1,17 @@
 #!/usr/bin/env zsh
 # ─────────────────────────────────────────────────────────────────────────────
-# Prerequisites for Qwen3.8-27B on MLX  -  Apple Silicon, 32 GB and up
+# Prerequisites for local-sovereign-mlx  -  Apple Silicon, 32 GB and up
 #
-# Sets up everything start-mlx_qwen3.8.sh needs, starting from a fresh macOS:
-# Xcode CLT -> uv -> venv (Python 3.12) -> mlx-vlm + patches -> model + MTP
-# drafter -> directories. Idempotent: re-runnable, completed steps are skipped,
-# downloads resume.
+# Sets up everything start-mlx_qwen3.8.sh and start-mlx_kolibri.sh need,
+# starting from a fresh macOS: Xcode CLT -> uv -> venv (Python 3.12) ->
+# mlx-vlm + patches -> model weights -> directories. Idempotent: re-runnable,
+# completed steps are skipped, downloads resume.
 #
 # Usage:
-#   ./install-prereqs.sh                 # everything, with pinned versions
-#   ./install-prereqs.sh --skip-model    # software only, no 15 GB download
+#   ./install-prereqs.sh                 # Qwen3.8-27B + drafter, pinned versions
+#   ./install-prereqs.sh --model kolibri # Kolibri 1 instead (48 GB, 33 GiB download)
+#   ./install-prereqs.sh --model all     # both
+#   ./install-prereqs.sh --skip-model    # software only, no download
 #   ./install-prereqs.sh --latest        # newest versions instead of the pinned ones
 #   ./install-prereqs.sh --check         # verify only, change nothing
 #
@@ -32,15 +34,27 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 SKIP_MODEL=0
 PINNED=1
 CHECK_ONLY=0
+WANT_MODEL=qwen
+_next_is_model=0
 for a in "$@"; do
+  if (( _next_is_model )); then WANT_MODEL="$a"; _next_is_model=0; continue; fi
   case "$a" in
+    --model)      _next_is_model=1 ;;
+    --model=*)    WANT_MODEL="${a#--model=}" ;;
     --skip-model) SKIP_MODEL=1 ;;
     --latest)     PINNED=0 ;;
     --check)      CHECK_ONLY=1 ;;
-    -h|--help)    sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "Unknown option: $a"; exit 1 ;;
   esac
 done
+case "$WANT_MODEL" in
+  qwen|kolibri|all) ;;
+  *) echo "--model must be qwen, kolibri or all (got: '$WANT_MODEL')"; exit 1 ;;
+esac
+WANT_QWEN=0; WANT_KOLIBRI=0
+[[ "$WANT_MODEL" == kolibri ]] || WANT_QWEN=1
+[[ "$WANT_MODEL" == qwen ]]    || WANT_KOLIBRI=1
 
 # Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-09-29).
 #
@@ -124,8 +138,15 @@ MODEL_DIR="$MLX_MODELS/Qwen3.8-27B-MLX-4bit"
 DRAFT_REPO="mlx-community/Qwen3.8-27B-MTP-4bit"
 DRAFT_DIR="$MLX_MODELS/Qwen3.8-27B-MTP-4bit"
 MODEL_ALIAS="${MODEL_ALIAS:-Qwen3.8-27B-local}"
-# Download size: model ~15.0 GiB (3 shards + tokenizer), drafter ~0.25 GiB.
-NEEDED_GB=20
+# Kolibri 1: experts 3 bit, rest 6 bit, router bf16 -- made by
+# convert-kolibri.py from Aleph-Alpha/Kolibri-1 (FP8) and published as-is.
+# Loads only with patch 0050 (mlx_vlm/models/kolibri1).
+KOLIBRI_REPO="here-be-dragons-ai/Kolibri-1-MLX-3bit"
+KOLIBRI_DIR="$MLX_MODELS/Kolibri-1-MLX-3bit"
+KOLIBRI_ALIAS="Kolibri-1-local"
+# Download size: Qwen model ~15.0 GiB (3 shards + tokenizer), drafter
+# ~0.25 GiB; Kolibri ~33 GiB.
+NEEDED_GB=$(( WANT_QWEN * 20 + WANT_KOLIBRI * 36 ))
 
 ok()   { echo "  ✓ $*" }
 info() { echo "  · $*" }
@@ -133,7 +154,8 @@ warn() { echo "  ⚠️  $*" >&2 }
 die()  { echo "  ✗ $*" >&2; exit 1 }
 
 echo "──────────────────────────────────────────────────────────────"
-echo "  Qwen3.8-27B / MLX  -  setup for Apple Silicon (32 / 48 GB)"
+echo "  local-sovereign-mlx  -  setup for Apple Silicon (32 / 48 GB)"
+echo "  Selection   : --model $WANT_MODEL"
 echo "  Target venv : $VENV_DIR"
 echo "  Models      : $MLX_MODELS"
 echo "──────────────────────────────────────────────────────────────"
@@ -180,8 +202,16 @@ elif (( RAM_GB == 32 )); then
 else
   info "Profile '$PROFILE_HINT' fits this machine (PROFILE=auto picks it by itself)."
 fi
+# Kolibri's weights alone are 32.8 GiB; they need wired_limit 40960, i.e. a
+# 48 GB machine. Below that the start script refuses, so do not download.
+if (( WANT_KOLIBRI && RAM_GB < 44 )); then
+  warn "Kolibri 1 needs 48 GB (32.8 GiB of weights, wired_limit 40960);"
+  warn "this machine has ${RAM_GB} GB. Skipping it."
+  WANT_KOLIBRI=0
+  NEEDED_GB=$(( NEEDED_GB - 36 ))
+fi
 FREE_GB=$(( $(df -k "$HOME" | awk 'NR==2{print $4}') / 1048576 ))
-info "Free disk space: ${FREE_GB} GB (needed: ~${NEEDED_GB} GB for model+drafter,"
+info "Free disk space: ${FREE_GB} GB (needed: ~${NEEDED_GB} GB for the weights,"
 info "plus up to 40 GB for the APC SSD cache -- the cap lives in the start script)"
 (( SKIP_MODEL == 1 || FREE_GB > NEEDED_GB )) || die "Not enough disk space."
 
@@ -329,29 +359,51 @@ have_model() { [[ -f "$1/config.json" ]] }
 if (( SKIP_MODEL == 1 )); then
   info "skipped (--skip-model)"
 elif (( CHECK_ONLY == 1 )); then
-  have_model "$MODEL_DIR" && ok "model: $(du -shL "$MODEL_DIR" | cut -f1)" || warn "model missing: $MODEL_DIR"
-  have_model "$DRAFT_DIR" && ok "drafter: $(du -shL "$DRAFT_DIR" | cut -f1)" || warn "drafter missing: $DRAFT_DIR"
+  if (( WANT_QWEN )); then
+    have_model "$MODEL_DIR" && ok "model: $(du -shL "$MODEL_DIR" | cut -f1)" || warn "model missing: $MODEL_DIR"
+    have_model "$DRAFT_DIR" && ok "drafter: $(du -shL "$DRAFT_DIR" | cut -f1)" || warn "drafter missing: $DRAFT_DIR"
+  fi
+  if (( WANT_KOLIBRI )); then
+    have_model "$KOLIBRI_DIR" && ok "Kolibri 1: $(du -shL "$KOLIBRI_DIR" | cut -f1)" || warn "Kolibri 1 missing: $KOLIBRI_DIR"
+  fi
 else
-  if have_model "$MODEL_DIR"; then
-    ok "model present ($(du -shL "$MODEL_DIR" | cut -f1))"
-  else
-    info "downloading $MODEL_REPO (~15 GiB, resumable, Ctrl-C safe at any time)"
-    "$BUNDLE_DIR/download-mlx-model.sh" "$MODEL_REPO" "$MODEL_DIR"
+  if (( WANT_QWEN )); then
+    if have_model "$MODEL_DIR"; then
+      ok "model present ($(du -shL "$MODEL_DIR" | cut -f1))"
+    else
+      info "downloading $MODEL_REPO (~15 GiB, resumable, Ctrl-C safe at any time)"
+      "$BUNDLE_DIR/download-mlx-model.sh" "$MODEL_REPO" "$MODEL_DIR"
+    fi
+    if have_model "$DRAFT_DIR"; then
+      ok "MTP drafter present ($(du -shL "$DRAFT_DIR" | cut -f1))"
+    else
+      info "downloading $DRAFT_REPO (~0.25 GiB) -- worth +58..132% decode"
+      "$BUNDLE_DIR/download-mlx-model.sh" "$DRAFT_REPO" "$DRAFT_DIR"
+    fi
+    # Alias symlink: with mlx-vlm the request model name IS the load path.
+    ln -sfn "$MODEL_DIR" "$MLX_MODELS/$MODEL_ALIAS"
+    ok "alias symlink: $MLX_MODELS/$MODEL_ALIAS -> $MODEL_DIR"
   fi
-  if have_model "$DRAFT_DIR"; then
-    ok "MTP drafter present ($(du -shL "$DRAFT_DIR" | cut -f1))"
-  else
-    info "downloading $DRAFT_REPO (~0.25 GiB) -- worth +58..132% decode"
-    "$BUNDLE_DIR/download-mlx-model.sh" "$DRAFT_REPO" "$DRAFT_DIR"
+  if (( WANT_KOLIBRI )); then
+    if have_model "$KOLIBRI_DIR"; then
+      ok "Kolibri 1 present ($(du -shL "$KOLIBRI_DIR" | cut -f1))"
+    else
+      info "downloading $KOLIBRI_REPO (~33 GiB, resumable, Ctrl-C safe at any time)"
+      "$BUNDLE_DIR/download-mlx-model.sh" "$KOLIBRI_REPO" "$KOLIBRI_DIR"
+    fi
+    ln -sfn "$KOLIBRI_DIR" "$MLX_MODELS/$KOLIBRI_ALIAS"
+    ok "alias symlink: $MLX_MODELS/$KOLIBRI_ALIAS -> $KOLIBRI_DIR"
   fi
-  # Alias symlink: with mlx-vlm the request model name IS the load path.
-  ln -sfn "$MODEL_DIR" "$MLX_MODELS/$MODEL_ALIAS"
-  ok "alias symlink: $MLX_MODELS/$MODEL_ALIAS -> $MODEL_DIR"
 fi
 
 # ── Directories ───────────────────────────────────────────────────────────────
 if (( CHECK_ONLY == 0 )); then
-  mkdir -p "${STATE_DIR:-$HOME/.mlx-qwen38}/logs" "${STATE_DIR:-$HOME/.mlx-qwen38}/apc"
+  if (( WANT_QWEN )); then
+    mkdir -p "${STATE_DIR:-$HOME/.mlx-qwen38}/logs" "${STATE_DIR:-$HOME/.mlx-qwen38}/apc"
+  fi
+  if (( WANT_KOLIBRI )); then
+    mkdir -p "$HOME/.mlx-kolibri/logs" "$HOME/.mlx-kolibri/apc"
+  fi
 fi
 
 echo
@@ -366,9 +418,13 @@ echo "     The daemon computes the value from hw.memsize at every boot -- no"
 echo "     RAM-specific value is hardcoded anywhere. One call instead of four"
 echo "     sudo lines: those broke when pasted and half-completed."
 echo
-echo "  2) Start the server:"
-echo "       $BUNDLE_DIR/start-mlx_qwen3.8.sh"
-echo "     The start script prints this machine's computed context budget."
+echo "  2) Start a server (one at a time -- both do not fit into memory):"
+if (( WANT_QWEN )); then
+  echo "       $BUNDLE_DIR/start-mlx_qwen3.8.sh   # prints the context budget"
+fi
+if (( WANT_KOLIBRI )); then
+  echo "       $BUNDLE_DIR/start-mlx_kolibri.sh   # or chat-kolibri.sh, no server"
+fi
 echo
 echo "  3) Configure the client to the budget (context_length,"
 echo "     max_tokens=16384) -- values and rationale in README.md."

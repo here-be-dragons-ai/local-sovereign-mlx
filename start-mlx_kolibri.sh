@@ -37,7 +37,8 @@
 #   prefers one call per turn over parallel calls.
 #
 # Prerequisites: install-prereqs.sh has run, patches/apply-patches.sh has
-# applied 0050, the checkpoint exists (see convert-kolibri.py).
+# applied 0050, the checkpoint exists (install-prereqs.sh --model kolibri
+# downloads it; convert-kolibri.py rebuilds it from the FP8 release).
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -75,7 +76,8 @@ APC_MIN_FREE_RAM_GB="${APC_MIN_FREE_RAM_GB:-3.0}"
 [[ -x "$VENV_PY" ]] || { echo "ERROR: no venv python at $VENV_PY (install-prereqs.sh)" >&2; exit 1; }
 [[ -f "$MODEL_DIR/config.json" ]] || {
   echo "ERROR: no checkpoint at $MODEL_DIR" >&2
-  echo "       ./convert-kolibri.py \$MLX_MODELS/Kolibri-1-FP8 $MODEL_DIR" >&2
+  echo "       ./install-prereqs.sh --model kolibri   (download, 33 GiB)" >&2
+  echo "       ./convert-kolibri.py \$MLX_MODELS/Kolibri-1-FP8 $MODEL_DIR   (or convert)" >&2
   exit 1
 }
 "$VENV_PY" -c "import mlx_vlm.models.kolibri1" 2>/dev/null || {
