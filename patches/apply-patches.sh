@@ -535,13 +535,33 @@ trap - EXIT INT TERM
 
 [[ "$MODE" == "revert" ]] && patches=( "${revert_order[@]}" )
 
+# Files a patch CREATES (hunk "@@ -0,0"). If upstream ships one of them, the
+# patch must not run: macOS patch does not refuse a creation hunk on an
+# existing file, it merges our content into upstream's and exits 0. Tested
+# 2026-10-06 with 0050 on main after #2423: language.py 307 -> 590 lines, two
+# `class LanguageModel`, Python silently keeps the second.
+created_files() {
+  awk '/^\+\+\+ /{f=$2; sub(/^b\//,"",f)} /^@@ -0,0 /{print f}' "$1" | sort -u
+}
+
 for p in "${patches[@]}"; do
   name="${p:t}"
   applied=${applied_map[$name]}
 
+  upstream_has=""
+  if [[ $applied == 0 ]]; then
+    for f in $(created_files "$p"); do
+      [[ -e "$SITE_PACKAGES/$f" ]] && { upstream_has="$f"; break; }
+    done
+  fi
+
   case "$MODE" in
     check)
-      echo "  $([[ $applied == 1 ]] && echo '[ applied ]' || echo '[  open   ]')  $name"
+      if [[ -n $upstream_has ]]; then
+        echo "  [upstream ]  $name  (mlx-vlm ships $upstream_has -- remove the patch)"
+      else
+        echo "  $([[ $applied == 1 ]] && echo '[ applied ]' || echo '[  open   ]')  $name"
+      fi
       continue
       ;;
     revert)
@@ -557,6 +577,12 @@ for p in "${patches[@]}"; do
 
   if [[ $applied == 1 ]]; then
     echo "  already applied: $name"
+    continue
+  fi
+
+  if [[ -n $upstream_has ]]; then
+    echo "  ⚠️  SKIPPED: $name creates $upstream_has, which mlx-vlm now ships."
+    echo "      The feature has most likely landed upstream; remove the file from $PATCH_DIR."
     continue
   fi
 
