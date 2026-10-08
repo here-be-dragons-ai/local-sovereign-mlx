@@ -112,6 +112,7 @@ def server_context(port):
         max_num_seqs=flag("max-num-seqs"),
         apc="APC_ENABLED=1" in env,
         apc_entries=(re.search(r"APC_EXACT_CACHE_ENTRIES=(\d+)", env) or [None, None])[1],
+        apc_reserve_gb=(re.search(r"APC_MEMORY_RESERVE_GB=([\d.]+)", env) or [None, "auto"])[1],
     )
     python = cmd.split()[0] if cmd else ""
     if os.path.isfile(python):

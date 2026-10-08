@@ -355,17 +355,18 @@ time to first token 2026-10-08 with `measure-kolibri-ttft.py`):
 | 8k | | 1590 t/s | 5.3 s | 0.4 s |
 | 23k | 57 t/s | ~1570 t/s | | |
 | 32k | | 1380 t/s | 24 s | 0.6 s |
-| 64k | | 1090 t/s | 59 s | – |
+| 64k | | 1090 t/s | 59 s | 1.4 s |
 | 96k | 40 t/s | 885 t/s | **109 s** | – |
 
 No drafter exists for this model, and at 3.5B active parameters decode is
 not the bottleneck -- the prefill is. Exact APC works on its mixed
 full/sliding cache, with two limits measured on 2026-10-08:
 
-- After one prefill of **64k tokens or more**, exact APC stops working until
-  the server restarts: the prefill reserve grows to 3.6 GB, snapshots no longer
-  fit next to the weights, go to disk only, and are never restored
-  (`memory_skips` rises, `disk_hits` stays 0 in `/metrics`).
+- Snapshots stay in memory only while free RAM covers a reserve on top of the
+  prefill reserve and the snapshot. mlx-vlm's automatic reserve (4 GiB here)
+  is too large next to 33 GB of weights: follow-up turns from ~32k tokens up
+  missed the cache. The script sets `APC_RESERVE_GB=1.5`; with it 8k, 32k and
+  64k hit (96k not re-measured).
 - With **`reasoning_effort: none`**, a follow-up turn misses the final snapshot:
   the template's empty `<think></think>` in the generation prompt is not
   rendered for earlier turns. Use `low` or higher for multi-turn work.
@@ -374,6 +375,7 @@ full/sliding cache, with two limits measured on 2026-10-08:
 |---|---|---|
 | `MODEL_ALIAS` | `Kolibri-1-local` | **must** match the model name in the request |
 | `ENABLE_APC` / `APC_ENTRIES` | `1` / `2` | prefix cache, snapshots kept warm |
+| `APC_RESERVE_GB` | `1.5` | free RAM kept back before a snapshot is stored; empty = mlx-vlm's automatic 4 GiB |
 | `APC_DISK_MAX_GB` | `40` | SSD tier cap |
 | `KV_BITS` | empty (f16) | the KV cache is small; not needed |
 | `PREFILL_STEP` | `2048` | |

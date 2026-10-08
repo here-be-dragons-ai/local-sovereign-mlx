@@ -9,6 +9,7 @@ plus the two measurement scripts).
 | `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy, text sources |
 | `per-question-2026-10-08.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
 | `ttft-2026-10-08.jsonl` | one line per TTFT request, with server flags and versions |
+| `ttft-reserve-2026-10-08.jsonl` | the same with `APC_MEMORY_RESERVE_GB=1.5`, one run up to 64k |
 
 ## Quality
 
@@ -72,18 +73,28 @@ APC on, 2 entries), `reasoning_effort: low`, median of 2 runs.
 | 1k | 0.8 s | 1,620 t/s | 0.35 s |
 | 8k | 5.3 s | 1,590 t/s | 0.4 s* |
 | 32k | 24 s | 1,380 t/s | 0.6 s* |
-| 64k | 59 s | 1,090 t/s | no hit |
-| 96k | **109 s** | 885 t/s | no hit |
+| 64k | 59 s | 1,090 t/s | 1.4 s† |
+| 96k | **109 s** | 885 t/s | no hit‡ |
 
 Peak memory at 96k: 38.0 GiB.
 
-\* First run only. Two limits of the prefix cache, both measured:
+\* First run only. † With `APC_MEMORY_RESERVE_GB=1.5` (now the default of
+`start-mlx_kolibri.sh`), one run; cold 4.7 / 21 / 56 s and warm 0.37 / 0.57 /
+1.4 s at 8k / 32k / 64k. ‡ Automatic reserve; not re-measured with 1.5.
+Two limits of the prefix cache, both measured:
 
-- **After one prefill of 64k tokens or more, exact APC stops working until the
-  server restarts.** mlx-vlm's prefill reserve grows to 3.6 GB; next to 33 GB
-  of weights in a 40 GB working set no snapshot fits in memory any more
-  (`memory_skips` rises, `exact_resident_bytes` 0), they go to disk only, and
-  disk restores never happen (`disk_hits` 0).
+- **Follow-up turns from ~32k tokens up miss the cache when free RAM is
+  short.** mlx-vlm keeps a snapshot in memory only while its headroom (the
+  smaller of working set minus active memory and free + inactive RAM per
+  `vm_stat` plus the mlx cache) covers a reserve, the prefill reserve and the
+  snapshot. The automatic reserve is a tenth of the working set, 4 GiB; next
+  to 33 GB of weights only 4-5 GiB of RAM are free, so 8k usually fits and
+  32k usually does not (`memory_skips` rises, disk restores never happen).
+  With a 1.5 GB reserve 8k, 32k and 64k hit; the working-set term still guards
+  the Metal limit. The prefill reserve is recomputed per prompt: a 64k+
+  prefill does not disable APC for later, shorter prompts (an earlier version
+  of this page said so; `prefill_reserve_bytes` in `/metrics` only shows the
+  last request).
 - **With `reasoning_effort: none`, follow-up turns miss the final snapshot.**
   The template ends the generation prompt with an empty `<think></think>`
   block but renders earlier assistant turns without it; the sliding-window

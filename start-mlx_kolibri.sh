@@ -68,11 +68,19 @@ _MEM_PROBE_INTERVAL="${MEM_PROBE_INTERVAL:-5}"
 # (self-check: pageable / windowed). Measured 2026-10-03 on a 15.5k-token
 # conversation: cold 20.3 s, follow-up turn 1.5 s (14,336 tokens restored),
 # identical repeat 0.2 s, answers unchanged.
-# Limits (2026-10-08, see docs/kolibri-quality/): after one prefill of 64k+
-# tokens the prefill reserve (3.6 GB) leaves no room for snapshots and exact APC
-# stays dead until a restart; with reasoning_effort=none follow-up turns miss
-# the final snapshot (template's empty <think></think>).
+#
+# APC_RESERVE_GB. APC keeps a snapshot only while the headroom -- the smaller
+# of (working set - active memory) and (free + inactive RAM per vm_stat + mlx
+# cache) -- covers this reserve plus the prefill reserve plus the snapshot.
+# mlx-vlm's automatic reserve is a tenth of the working set, 4 GiB here; next
+# to 33 GB of weights only ~4-5 GiB of RAM are free, so follow-up turns from
+# ~32k tokens up missed the cache. Measured 2026-10-08: with 1.5, follow-ups
+# hit at 8k / 32k / 64k (0.4 / 0.6 / 1.4 s instead of 5 / 21 / 56 s cold). The
+# working-set term still guards the Metal limit.
+# With reasoning_effort=none, follow-up turns miss the final snapshot anyway:
+# the template's empty <think></think> is not rendered for earlier turns.
 ENABLE_APC="${ENABLE_APC:-1}"
+APC_RESERVE_GB="${APC_RESERVE_GB:-1.5}"
 APC_ENTRIES="${APC_ENTRIES:-2}"
 APC_DISK="${APC_DISK:-$STATE_DIR/apc}"
 APC_DISK_MAX_GB="${APC_DISK_MAX_GB:-40}"
@@ -117,7 +125,7 @@ echo "Kolibri 1 · mlx-vlm $VLM_VER · mlx $MLX_VER"
 echo "  model   : $MODEL_ALIAS -> $MODEL_DIR"
 echo "  server  : http://$BIND_HOST:$PORT/v1   (log: $LOG_FILE)"
 echo "  wired   : ${_WIRED_MB} MB · prefill step $PREFILL_STEP · seqs $MAX_NUM_SEQS · KV ${KV_BITS:-f16}"
-echo "  APC     : $([[ "$ENABLE_APC" == "1" ]] && echo "on, $APC_ENTRIES entries, disk $APC_DISK (${APC_DISK_MAX_GB} GB)" || echo off)"
+echo "  APC     : $([[ "$ENABLE_APC" == "1" ]] && echo "on, $APC_ENTRIES entries, reserve ${APC_RESERVE_GB} GB, disk $APC_DISK (${APC_DISK_MAX_GB} GB)" || echo off)"
 
 args=(
   --host                  "$BIND_HOST"
@@ -132,6 +140,7 @@ args=(
 if [[ "$ENABLE_APC" == "1" ]]; then
   export APC_ENABLED=1
   export APC_EXACT_CACHE_ENTRIES="$APC_ENTRIES"
+  export APC_MEMORY_RESERVE_GB="$APC_RESERVE_GB"
   if [[ -n "$APC_DISK" ]]; then
     mkdir -p "$APC_DISK"
     export APC_DISK_PATH="$APC_DISK"
