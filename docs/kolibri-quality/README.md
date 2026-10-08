@@ -1,0 +1,110 @@
+# Kolibri-1-MLX-3bit: quality loss and time to first token
+
+Measurements for issue #8, 2026-10-08, Apple M5 Pro, 48 GB,
+`iogpu.wired_limit_mb=40960`, mlx 0.32.2, mlx-vlm 0.7.4 (repo commit `4f68407`
+plus the two measurement scripts).
+
+| file | content |
+|---|---|
+| `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy, text sources |
+| `per-question-2026-10-08.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
+| `ttft-2026-10-08.jsonl` | one line per TTFT request, with server flags and versions |
+
+## Quality
+
+**Method.** Three arms go through the same layer-streamed forward pass
+(`measure-kolibri-quality.py`): the FP8 release (`Aleph-Alpha/Kolibri-1`) as
+the reference, the shipped 3/6-bit build, and a uniform 3-bit control
+(`convert-kolibri.py --other-bits 3`). The streamed pass is bit-identical to
+the ordinary in-memory forward on the 3-bit checkpoint (`check`: max |Δh| = 0).
+Logits are computed in fp32 on the CPU from the final hidden state and each
+arm's own LM head.
+
+**KL divergence and perplexity.** 75,900 scored tokens of Wikipedia prose at
+pinned revisions (`sources` in the JSON), German and English, 4096-token
+windows. "post" articles were created after Kolibri's knowledge cutoff
+(2026-06-18).
+
+| arm | bits/weight | mean KL | median KL | p99 KL | top-1 agreement | PPL (FP8: 16.98) |
+|---|---|---|---|---|---|---|
+| 3/6-bit (shipped) | 3.61 | 0.114 | 0.021 | 2.07 | 88.9% | 17.11 |
+| uniform 3-bit | 3.51 | 0.376 | 0.138 | 5.42 | 76.5% | 19.38 |
+
+By language, the shipped build: German mean KL 0.106, English 0.121; before /
+after the cutoff 0.110 / 0.101 (de) and 0.092 / 0.155 (en).
+
+Cross-runtime: `llama-perplexity -c 4096` on the same text gives **17.75 ±
+0.30** for the Q3_K_S GGUF (`Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`, 31.5 GiB). In the same convention -- second half of each window scored -- the
+FP8 reference is 15.69, the shipped 3/6-bit build 15.75, uniform 3-bit 17.63.
+The windows are not cut identically (llama.cpp splits across article
+boundaries), so the numbers are comparable, not equal. No KL for the GGUF: that
+needs llama.cpp's logit file format for the reference.
+
+**Multiple choice.** Kolibri's chat template with `reasoning_effort=none`,
+options A-D in the user turn, scored by the letter logits at the first answer
+position. Δ and McNemar (exact, two-sided) are paired against FP8.
+
+| set | FP8 | 3/6-bit (shipped) | Δ | p | uniform 3-bit | Δ | p |
+|---|---|---|---|---|---|---|---|
+| Belebele de (900) | 92.9% | 93.1% | +0.2 pp | 0.80 | 92.0% | −0.9 pp | 0.23 |
+| Belebele en (900) | 95.2% | 94.8% | −0.4 pp | 0.45 | 93.6% | −1.7 pp | 0.006 |
+| Global-MMLU-Lite de (400) | 72.5% | 71.2% | −1.2 pp | 0.30 | 68.5% | −4.0 pp | 0.011 |
+| Global-MMLU-Lite en (400) | 73.8% | 72.0% | −1.8 pp | 0.14 | 72.0% | −1.8 pp | 0.21 |
+
+95% Wilson intervals are in the JSON (about ±1.5 pp for Belebele, ±4.5 pp for
+Global-MMLU-Lite). The shipped build gives the same answer as FP8 on 95-98% of
+the questions. None of its differences is significant at these sizes; a loss of
+1-2 points on Global-MMLU-Lite cannot be ruled out either. Uniform 3-bit loses
+significantly on two of the four sets: the 6-bit attention, shared expert,
+embedding and head are worth their 0.1 bits per weight.
+
+These are likelihood scores without reasoning. They measure what the
+quantization changes, not what Kolibri scores with thinking enabled; compare
+them with each other, not with the original model card.
+
+## Time to first token
+
+`measure-kolibri-ttft.py`, server `start-mlx_kolibri.sh` (`PREFILL_STEP` 2048,
+APC on, 2 entries), `reasoning_effort: low`, median of 2 runs.
+
+| context | cold TTFT | prefill rate | warm TTFT (exact-APC follow-up) |
+|---|---|---|---|
+| 1k | 0.8 s | 1,620 t/s | 0.35 s |
+| 8k | 5.3 s | 1,590 t/s | 0.4 s* |
+| 32k | 24 s | 1,380 t/s | 0.6 s* |
+| 64k | 59 s | 1,090 t/s | no hit |
+| 96k | **109 s** | 885 t/s | no hit |
+
+Peak memory at 96k: 38.0 GiB.
+
+\* First run only. Two limits of the prefix cache, both measured:
+
+- **After one prefill of 64k tokens or more, exact APC stops working until the
+  server restarts.** mlx-vlm's prefill reserve grows to 3.6 GB; next to 33 GB
+  of weights in a 40 GB working set no snapshot fits in memory any more
+  (`memory_skips` rises, `exact_resident_bytes` 0), they go to disk only, and
+  disk restores never happen (`disk_hits` 0).
+- **With `reasoning_effort: none`, follow-up turns miss the final snapshot.**
+  The template ends the generation prompt with an empty `<think></think>`
+  block but renders earlier assistant turns without it; the sliding-window
+  caches cannot rewind to the point of divergence. At best the 2048-token
+  interval checkpoint hits (8k: 6,144 tokens restored, 1.7 s). `low`, `medium`
+  and `high` keep the prefix stable.
+
+## Reproduce
+
+```sh
+# TTFT: server running, fresh start, long contexts last
+MEM_PROBE_INTERVAL=0.5 caffeinate -dimsu ./start-mlx_kolibri.sh
+./measure-kolibri-ttft.py
+
+# Quality: server stopped; FP8 release in ~/src/mlx/models/Kolibri-1-FP8
+./measure-kolibri-quality.py prepare
+./measure-kolibri-quality.py check --ckpt 3bit
+./convert-kolibri.py ~/src/mlx/models/Kolibri-1-FP8 ~/src/mlx/models/Kolibri-1-MLX-3bit-uniform --other-bits 3
+for c in fp8 3bit 3bit-uniform; do ./measure-kolibri-quality.py forward --ckpt $c; done
+./measure-kolibri-quality.py report
+```
+
+Run time on the M5 Pro: FP8 reference 24 min for all sets (556k tokens, peak
+7.4 GiB), each quantized arm ~17 min, report ~2 min.

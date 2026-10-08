@@ -17,6 +17,9 @@ the checkpoint's quantization_config removed.
 
 Usage:
   ./convert-kolibri.py ~/src/mlx/models/Kolibri-1-FP8 ~/src/mlx/models/Kolibri-1-MLX-3bit
+
+--other-bits 3 builds the uniform 3-bit control for the quality ablation in
+measure-kolibri-quality.py (issue #8); it is not a recipe to ship.
 """
 
 import argparse
@@ -31,12 +34,15 @@ OTHER_BITS = 6
 GROUP_SIZE = 64
 
 
-def predicate(path, module):
-    if path.endswith("mlp.gate"):
-        return False
-    if ".mlp.experts." in path:
-        return {"group_size": GROUP_SIZE, "bits": EXPERT_BITS, "mode": "affine"}
-    return {"group_size": GROUP_SIZE, "bits": OTHER_BITS, "mode": "affine"}
+def make_predicate(other_bits):
+    def predicate(path, module):
+        if path.endswith("mlp.gate"):
+            return False
+        if ".mlp.experts." in path:
+            return {"group_size": GROUP_SIZE, "bits": EXPERT_BITS, "mode": "affine"}
+        return {"group_size": GROUP_SIZE, "bits": other_bits, "mode": "affine"}
+
+    return predicate
 
 
 def make_staging(src: Path) -> Path:
@@ -55,6 +61,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("src", type=Path)
     ap.add_argument("dst", type=Path)
+    ap.add_argument("--other-bits", type=int, default=OTHER_BITS,
+                    help="bits outside the routed experts (default %(default)s)")
     args = ap.parse_args()
 
     src, dst = args.src.expanduser(), args.dst.expanduser()
@@ -77,7 +85,7 @@ def main():
             quantize=True,
             q_group_size=GROUP_SIZE,
             q_bits=EXPERT_BITS,
-            quant_predicate=predicate,
+            quant_predicate=make_predicate(args.other_bits),
         )
     finally:
         shutil.rmtree(staging)

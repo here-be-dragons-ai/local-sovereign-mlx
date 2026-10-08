@@ -21,6 +21,8 @@
 # ── SPEED (measured 2026-10-03, M5 Pro, mlx-vlm 0.7.4, mlx 0.32.2) ──────────
 #   decode    ~70 t/s short context, 57 t/s at 23k, 40 t/s at 96k
 #   prefill   ~1570 t/s at 23k, ~1020 t/s at 96k
+#   first token, cold (2026-10-08, measure-kolibri-ttft.py): 0.8 s at 1k,
+#             5.3 s at 8k, 24 s at 32k, 59 s at 64k, 109 s at 96k (885 t/s)
 #   No drafter: none exists for this model, and at 3.5B active parameters
 #   decode is not the bottleneck.
 #
@@ -66,6 +68,10 @@ _MEM_PROBE_INTERVAL="${MEM_PROBE_INTERVAL:-5}"
 # (self-check: pageable / windowed). Measured 2026-10-03 on a 15.5k-token
 # conversation: cold 20.3 s, follow-up turn 1.5 s (14,336 tokens restored),
 # identical repeat 0.2 s, answers unchanged.
+# Limits (2026-10-08, see docs/kolibri-quality/): after one prefill of 64k+
+# tokens the prefill reserve (3.6 GB) leaves no room for snapshots and exact APC
+# stays dead until a restart; with reasoning_effort=none follow-up turns miss
+# the final snapshot (template's empty <think></think>).
 ENABLE_APC="${ENABLE_APC:-1}"
 APC_ENTRIES="${APC_ENTRIES:-2}"
 APC_DISK="${APC_DISK:-$STATE_DIR/apc}"

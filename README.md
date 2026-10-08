@@ -334,19 +334,41 @@ it:
 **Memory.** Only the 10 full-attention layers grow with the context, ~20 KiB
 per token in f16; the 40 sliding-window layers hold 513 tokens each. 96k
 tokens of context cost ~1.9 GiB, so the context is not the constraint here --
-the weights are. Measured peak on short prompts: 35.3 GB.
+the weights are. Measured peak: 35.3 GB on short prompts, 38.0 GiB at 96k.
 
-**Speed** (M5 Pro / 48 GB, mlx-vlm 0.7.4, mlx 0.32.2, 2026-10-03):
+**Quality** against the FP8 release, same harness for both
+(`measure-kolibri-quality.py`, 2026-10-08; details and raw data in
+[`docs/kolibri-quality/`](docs/kolibri-quality/README.md)): mean KL 0.114
+(median 0.021), top-1 token agreement 88.9%, perplexity 17.11 against 16.98 on
+76k tokens of German and English prose. On Belebele and Global-MMLU-Lite
+(de/en, multiple choice without reasoning) the 3-bit build is within +0.2 to
+−1.8 points of the original, none of it significant. A uniform 3-bit control
+loses significantly (KL 0.376, up to −4.0 points), which is what the 6-bit
+parts are for.
 
-| context | decode | prefill |
-|---|---|---|
-| short | ~70 t/s | |
-| 23k | 57 t/s | ~1570 t/s |
-| 96k | 40 t/s | ~1020 t/s |
+**Speed** (M5 Pro / 48 GB, mlx-vlm 0.7.4, mlx 0.32.2; decode 2026-10-03,
+time to first token 2026-10-08 with `measure-kolibri-ttft.py`):
+
+| context | decode | prefill | first token, cold | first token, APC hit |
+|---|---|---|---|---|
+| 1k | ~70 t/s | 1620 t/s | 0.8 s | 0.35 s |
+| 8k | | 1590 t/s | 5.3 s | 0.4 s |
+| 23k | 57 t/s | ~1570 t/s | | |
+| 32k | | 1380 t/s | 24 s | 0.6 s |
+| 64k | | 1090 t/s | 59 s | – |
+| 96k | 40 t/s | 885 t/s | **109 s** | – |
 
 No drafter exists for this model, and at 3.5B active parameters decode is
-not the bottleneck. Exact APC works on its mixed full/sliding cache: a 15.5k
-conversation's follow-up turn took 1.5 s instead of 20.3 s cold.
+not the bottleneck -- the prefill is. Exact APC works on its mixed
+full/sliding cache, with two limits measured on 2026-10-08:
+
+- After one prefill of **64k tokens or more**, exact APC stops working until
+  the server restarts: the prefill reserve grows to 3.6 GB, snapshots no longer
+  fit next to the weights, go to disk only, and are never restored
+  (`memory_skips` rises, `disk_hits` stays 0 in `/metrics`).
+- With **`reasoning_effort: none`**, a follow-up turn misses the final snapshot:
+  the template's empty `<think></think>` in the generation prompt is not
+  rendered for earlier turns. Use `low` or higher for multi-turn work.
 
 | variable | default | effect |
 |---|---|---|
@@ -585,6 +607,8 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | `start-mlx_kolibri.sh` | Kolibri 1 server start |
 | `chat-kolibri.sh` | Kolibri 1 terminal chat, no server |
 | `convert-kolibri.py` | Kolibri 1 FP8 release → mixed 3/6-bit MLX checkpoint |
+| `measure-kolibri-quality.py` | Kolibri 1 quantization loss vs the FP8 release: KL, perplexity, Belebele, Global-MMLU-Lite (layer-streamed) |
+| `measure-kolibri-ttft.py` | Kolibri 1 time to first token, cold and on an exact-APC hit |
 | `watchdog-mlx_qwen3.8.sh` | restarts the server before memory fills up |
 | `download-mlx-model.sh` | resumable HuggingFace downloader, with size check |
 | `convert-dflash2-drafter.py` | quantizes the DFlash 2 drafter (bf16 → 4bit) |
