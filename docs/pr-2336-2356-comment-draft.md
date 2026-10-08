@@ -126,3 +126,25 @@ Per arm, pairs 1–3, restored decode: 10.41 / 10.51 / 10.59 t/s (0.7.3),
 16.07 / 16.09 / 16.07 (#2356), 16.06 / 16.06 / 16.05 (#2336); cold 15.87–16.07
 everywhere. `/v1/cache/stats` after each arm: `exact_hits` 4, `exact_stores` 8,
 `memory_skips` 0.
+
+## #2356, reply to the 09-30 rework (posted 2026-10-04)
+
+Posted as issuecomment-5983068785.
+
+Re-measured the reworked version with a DFlash 2 drafter (0.7.4, mlx 0.32.2, 26,690-token prefix, 300 tokens, two pairs per arm):
+
+| arm | cold tok/s | restored tok/s | restored/cold |
+|---|---:|---:|---:|
+| 0.7.4 | 20.63 / 21.68 | 19.54 / 21.18 | 0.962 |
+| + #2356 | 21.23 / 21.09 | 20.79 / 20.79 | 0.983 |
+| + #2356 + #2336 | 21.20 / 20.61 | 20.29 / 20.18 | 0.968 |
+
+Decode memory is the same in all arms. With a drafter, 0.7.4 already decodes a restored row at the cold rate, so the drafting condition changes nothing here. Agreed that the two PRs are complementary.
+
+### Raw
+
+Same instrument with `--repeat 2 --phases`, `PROFILE=roomy`, `MEM_PROBE_INTERVAL=0.5`,
+fresh `STATE_DIR` per arm, mlx_vlm overlays via `PYTHONPATH`. "0.7.4" = all
+local patches except `0035`. Decode memory (max active + cache): cold
+26.5–28.4 GiB, restored 27.2–27.3 GiB in every arm. Acceptance cold 51–55 %,
+restored 45–49 %.
