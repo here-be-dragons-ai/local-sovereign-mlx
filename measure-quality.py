@@ -1,29 +1,28 @@
 #!/usr/bin/env python3
-"""Measure what the 3-bit quantization costs Kolibri 1, against the FP8 original.
+"""Measure what quantization costs a model, against its original release.
 
-The point of this script is issue #8. The original is block-FP8, 73 GB, and does
-not fit on a 48 GB machine. It does not have to: every arm -- the FP8 reference,
-the shipped 3/6-bit build and the uniform 3-bit control -- goes through the SAME
-layer-streamed forward pass. One decoder layer is read from disk, run over all
-sequences of a set, and dropped before the next one is read. The FP8 release
-dequantizes lazily in Kolibri1's sanitize, so only the layer being evaluated is
-ever materialized (~3 GB in bf16). What is kept is the final normed hidden
-state; logits are computed from it at comparison time, with each arm's own LM
-head.
+Every arm -- the original as the reference, the shipped build and any control
+build -- goes through the SAME layer-streamed forward pass. One decoder layer
+is read from disk, run over all sequences of a set, and dropped before the
+next one is read, so a reference that does not fit in memory (Kolibri's FP8
+release: 73 GB) still runs on a 48 GB machine. What is kept is the final
+normed hidden state; logits are computed from it at comparison time, with
+each arm's own LM head.
 
-    ./measure-kolibri-quality.py prepare                 # texts + benchmarks
-    ./measure-kolibri-quality.py check   --ckpt 3bit     # streamed == in-memory?
-    ./measure-kolibri-quality.py forward --ckpt fp8      # all sets, resumable
-    ./measure-kolibri-quality.py forward --ckpt 3bit
-    ./measure-kolibri-quality.py forward --ckpt 3bit-uniform
-    ./measure-kolibri-quality.py report                  # KL, PPL, accuracy
+    ./measure-quality.py --model kolibri prepare            # texts + benchmarks
+    ./measure-quality.py --model kolibri check   --ckpt 3bit
+    ./measure-quality.py --model kolibri forward --ckpt fp8 # all sets, resumable
+    ./measure-quality.py --model kolibri report             # KL, PPL, accuracy
 
---ckpt takes a name from CHECKPOINTS or a path. Data, hidden states and results
-live in ~/src/mlx/kolibri-quality/ (--data), not in the repository: the
+--model picks a profile from PROFILES: its checkpoints, its reference, the
+build whose tokenizer and chat template make the sets, and its data
+directory. measure-kolibri-quality.py and measure-apertus-quality.py are the
+same with the profile fixed. --ckpt takes a name from the profile or a path.
+Data, hidden states and results live outside the repository (--data): the
 benchmark data is not ours to redistribute.
 
 STOP THE SERVER FIRST. A streamed layer plus the hidden states of the
-benchmark sets need ~10 GB; next to the 33 GB server that does not fit.
+benchmark sets need ~10 GB; next to a 33 GB server that does not fit.
 
 THE SETS.
   text         ~60k tokens of Wikipedia prose at pinned revisions, German and
@@ -34,7 +33,7 @@ THE SETS.
                window only), comparable to `llama-perplexity -c 4096`.
   belebele-*   Belebele deu_Latn / eng_Latn, 900 questions each.
   gmmlu-*      Global-MMLU-Lite de / en, 400 questions each.
-               Multiple choice through Kolibri's chat template with
+               Multiple choice through the model's chat template with
                reasoning_effort=none; the answer is the letter with the highest
                logit among A-D at the first answer position. Accuracy with a
                95% Wilson interval; against the reference also the paired
@@ -61,17 +60,41 @@ from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 MODELS = Path(os.environ.get("MLX_MODELS", "~/src/mlx/models")).expanduser()
-CHECKPOINTS = {
-    "fp8": MODELS / "Kolibri-1-FP8",
-    "3bit": MODELS / "Kolibri-1-MLX-3bit",
-    "3bit-uniform": MODELS / "Kolibri-1-MLX-3bit-uniform",
+PROFILES = {
+    # FP8 release: dequantized lazily via the staging copy (see load_lazy).
+    "kolibri": {
+        "checkpoints": {
+            "fp8": MODELS / "Kolibri-1-FP8",
+            "3bit": MODELS / "Kolibri-1-MLX-3bit",
+            "3bit-uniform": MODELS / "Kolibri-1-MLX-3bit-uniform",
+        },
+        "reference": "fp8",
+        "tokenizer": "3bit",
+        "data": "~/src/mlx/kolibri-quality",
+    },
+    # Needs the apertus1p5 branch of mlx-vlm: run with ~/src/mlx/.venv-apertus.
+    # Only the language model is measured.
+    "apertus": {
+        "checkpoints": {
+            "bf16": MODELS / "Apertus-v1.5-8B",
+            "8bit": MODELS / "Apertus-v1.5-8B-MLX-8bit-omni",
+            "4bit": MODELS / "Apertus-v1.5-8B-MLX-4bit",
+        },
+        "reference": "bf16",
+        "tokenizer": "8bit",
+        "data": "~/src/mlx/apertus-quality",
+    },
 }
-REFERENCE = "fp8"
+# Set by use_profile().
+CHECKPOINTS = {}
+REFERENCE = None
+TOKENIZER_ARM = None
+DEFAULT_DATA = None
 WINDOW = 4096
 MIN_WINDOW = 512
 LETTERS = "ABCD"
 SAVE_EVERY = 10
-UA = {"User-Agent": "local-sovereign-mlx/measure-kolibri-quality (issue #8)"}
+UA = {"User-Agent": "local-sovereign-mlx/measure-quality"}
 
 # Pinned revisions, picked once (2026-10-08): "post" articles were created
 # 2026-07-01..09-15, after the knowledge cutoff, longest prose first; "pre"
@@ -108,6 +131,15 @@ def _load_sibling(name, alias):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def use_profile(name):
+    global CHECKPOINTS, REFERENCE, TOKENIZER_ARM, DEFAULT_DATA
+    prof = PROFILES[name]
+    CHECKPOINTS = prof["checkpoints"]
+    REFERENCE = prof["reference"]
+    TOKENIZER_ARM = prof["tokenizer"]
+    DEFAULT_DATA = prof["data"]
 
 
 def ckpt_path(name):
@@ -197,7 +229,7 @@ def cmd_prepare(args):
     data = args.data
     (data / "raw").mkdir(parents=True, exist_ok=True)
     (data / "sets").mkdir(parents=True, exist_ok=True)
-    tok = AutoTokenizer.from_pretrained(str(ckpt_path("3bit")))
+    tok = AutoTokenizer.from_pretrained(str(ckpt_path(TOKENIZER_ARM)))
     letter_ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
     if any(len(i) != 1 for i in letter_ids) or len({i[0] for i in letter_ids}) != 4:
         sys.exit(f"answer letters are not four distinct single tokens: {letter_ids}")
@@ -327,10 +359,11 @@ def streamed_forward(lm, seqs, keep_last, partial=None):
         layer = layers[i]
         for j, h in enumerate(hs):
             L = h.shape[1]
-            key = (L, layer.use_sliding)
+            sliding = getattr(layer, "use_sliding", False)
+            key = (L, sliding)
             if key not in masks:
                 masks[key] = create_attention_mask(
-                    h, None, window_size=inner.sliding_window if layer.use_sliding else None
+                    h, None, window_size=inner.sliding_window if sliding else None
                 )
             hs[j] = layer(h, masks[key])
             mx.eval(hs[j])
@@ -535,7 +568,7 @@ def cmd_report(args):
     data = args.data
     arms = [a for a in os.listdir(data / "hidden") if (data / "hidden" / a).is_dir()]
     if REFERENCE not in arms:
-        sys.exit("no reference hidden states; run `forward --ckpt fp8` first")
+        sys.exit(f"no reference hidden states; run `forward --ckpt {REFERENCE}` first")
     sets = load_sets(data)
     heads = {a: head_weight(ckpt_path(a)) for a in arms}
     result = {
@@ -611,7 +644,7 @@ def _versions():
 
 
 def _print_report(r):
-    print("\n## KL divergence and perplexity vs FP8 (text set)\n")
+    print(f"\n## KL divergence and perplexity vs {REFERENCE} (text set)\n")
     print("| arm | group | tokens | mean KL | median KL | p99 KL | top-1 agree | PPL ref | PPL arm |")
     print("|---|---|---|---|---|---|---|---|---|")
     for arm, groups in r["text"].items():
@@ -619,7 +652,7 @@ def _print_report(r):
             print(f"| {arm} | {g} | {s['n']:,} | {s['kl_mean']:.4f} | {s['kl_median']:.4f} | "
                   f"{s['kl_p99']:.3f} | {s['top1_agree']:.1%} | {s['ppl_ref']:.3f} | {s['ppl_arm']:.3f} |")
     print("\n## Multiple choice (reasoning_effort=none, letter logits)\n")
-    print("| set | arm | n | accuracy | 95% CI | Δ vs FP8 | same answer | McNemar p | letter top-1 |")
+    print(f"| set | arm | n | accuracy | 95% CI | Δ vs {REFERENCE} | same answer | McNemar p | letter top-1 |")
     print("|---|---|---|---|---|---|---|---|---|")
     for name, arms in r["mc"].items():
         for arm, e in arms.items():
@@ -631,20 +664,25 @@ def _print_report(r):
                   f"{same} | {p} | {e['letter_top1']:.1%} |")
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--data", type=Path, default=Path("~/src/mlx/kolibri-quality").expanduser())
+def main(profile=None, doc=__doc__):
+    ap = argparse.ArgumentParser(description=doc.split("\n\n")[0])
+    if profile is None:
+        ap.add_argument("--model", required=True, choices=sorted(PROFILES))
+    ap.add_argument("--data", type=Path, help="data directory (default: the profile's)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("prepare")
     p = sub.add_parser("check")
-    p.add_argument("--ckpt", default="3bit")
+    p.add_argument("--ckpt", help="default: the profile's tokenizer build")
     p = sub.add_parser("forward")
     p.add_argument("--ckpt", required=True)
     p.add_argument("--arm", help="name of the arm (default: --ckpt)")
     p.add_argument("--sets", help="comma-separated subset of sets")
     sub.add_parser("report")
     args = ap.parse_args()
-    args.data = args.data.expanduser()
+    use_profile(profile or args.model)
+    args.data = (args.data or Path(DEFAULT_DATA)).expanduser()
+    if args.cmd == "check" and not args.ckpt:
+        args.ckpt = TOKENIZER_ARM
     {"prepare": cmd_prepare, "check": cmd_check, "forward": cmd_forward, "report": cmd_report}[
         args.cmd
     ](args)
