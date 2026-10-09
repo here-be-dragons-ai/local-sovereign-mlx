@@ -22,8 +22,11 @@ server's own `timings.prompt_ms` is recorded next to it; the two should agree
 to within the HTTP and template overhead, and a large gap is reported, not
 averaged away.
 
-A cold arm with cache_n > 0 or a warm arm with cache_n == 0 is a broken
-measurement and is flagged as such.
+A cold arm that restores more than the chat template's fixed prefix, or a
+warm arm that restores nothing, is a broken measurement and is flagged as such.
+The fixed prefix is what the template puts in front of every user turn: none
+for Kolibri, a ~60-token system and developer block for Apertus 1.5, which
+the server rightly restores on a cold request too.
 
 THE REASONING EFFORT DECIDES WHETHER A WARM HIT CAN EXIST. With
 `reasoning_effort: none` Kolibri's template ends the generation prompt with an
@@ -172,7 +175,7 @@ def ask_stream(url, model, messages, max_tokens, timeout, effort):
     }
 
 
-def run_arm(args, messages, window, arm, target):
+def run_arm(args, messages, window, arm, target, shared=0):
     window.mark()
     r = ask_stream(args.url, args.model, messages, args.max_tokens, args.timeout, args.effort)
     mem_sum, _ = window.collect()
@@ -180,7 +183,7 @@ def run_arm(args, messages, window, arm, target):
     prompt_tokens = u.get("prompt_tokens", 0)
     cache_n = t.get("cache_n", (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0))
     prompt_s = (t.get("prompt_ms") or 0) / 1000.0 or None
-    broken = (arm == "cold" and cache_n > 0) or (arm == "warm" and cache_n == 0)
+    broken = (arm == "cold" and cache_n > shared) or (arm == "warm" and cache_n == 0)
     return {
         "arm": arm,
         "target": target,
@@ -195,6 +198,21 @@ def run_arm(args, messages, window, arm, target):
         "broken": broken,
         "answer": r["answer"],
     }
+
+
+def template_prefix(tok):
+    """Tokens the chat template puts in front of any user turn."""
+    try:
+        a, b = (
+            list(tok.apply_chat_template([{"role": "user", "content": c}], tokenize=False))
+            for c in ("x", "y")
+        )
+    except Exception:  # noqa: BLE001 - no template: nothing shared
+        return 0
+    n = 0
+    while n < min(len(a), len(b)) and a[n] == b[n]:
+        n += 1
+    return len(tok.encode("".join(a[:n]), add_special_tokens=False))
 
 
 def _fmt(v, spec="7.2f"):
@@ -232,6 +250,7 @@ def main():
     tok = _mda.load_tokenizer(args.model_dir)
     if tok is None:
         sys.exit("a tokenizer is required here; prompt lengths must be exact")
+    shared = template_prefix(tok)
     window = _maw.LogWindow(args.log)
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     targets = [int(x) for x in args.contexts.split(",")]
@@ -245,10 +264,12 @@ def main():
     rows = []
     for rep in range(args.repeat):
         for target in targets:
-            nonce = f"[run {run_id}-{rep}-{target}-{uuid.uuid4().hex}]\n"
+            # Random part first: "[run <id>" in front was shared by all cold
+            # requests of a run and restored as a prefix.
+            nonce = f"[{uuid.uuid4().hex} run {run_id}-{rep}-{target}]\n"
             prompt = nonce + _mda.build_prompt(target - len(tok.encode(nonce)), tok)
             messages = [{"role": "user", "content": prompt}]
-            cold = run_arm(args, messages, window, "cold", target)
+            cold = run_arm(args, messages, window, "cold", target, shared)
             messages += [
                 {"role": "assistant", "content": cold["answer"]},
                 {"role": "user", "content": _FOLLOW_UP},
