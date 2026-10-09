@@ -529,15 +529,28 @@ def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, chunk=512):
 
 
 def _summ(rows):
+    """KL distribution as llama-perplexity --kl-divergence reports it (Unsloth's numbers).
+
+    Percentiles by nearest rank on the sorted per-token values; p99.9 is the
+    worst token in a thousand, max the single worst. top1_agree is llama.cpp's
+    "same top p".
+    """
     import statistics
 
     kls = sorted(r[3] for r in rows)
     n = len(kls)
+
+    def pct(q):
+        return kls[min(n - 1, int(q * n))]
+
     return {
         "n": n,
         "kl_mean": sum(kls) / n,
         "kl_median": statistics.median(kls),
-        "kl_p99": kls[min(n - 1, int(0.99 * n))],
+        "kl_p90": pct(0.90),
+        "kl_p99": pct(0.99),
+        "kl_p999": pct(0.999),
+        "kl_max": kls[-1],
         "top1_agree": sum(r[6] for r in rows) / n,
         "ppl_ref": math.exp(sum(r[4] for r in rows) / n),
         "ppl_arm": math.exp(sum(r[5] for r in rows) / n),
@@ -620,6 +633,9 @@ def cmd_report(args):
                     delta_acc=(k - sum(ref["correct"])) / n,
                     mcnemar_p=_mcnemar(b, c),
                     ref_only=b, arm_only=c,
+                    # Flips (Dutta et al. 2024): right <-> wrong against the
+                    # reference. same_answer also counts wrong -> other wrong.
+                    flips=b + c, flip_rate=(b + c) / n,
                 )
             result["mc"][name][arm] = entry
 
@@ -645,23 +661,28 @@ def _versions():
 
 def _print_report(r):
     print(f"\n## KL divergence and perplexity vs {REFERENCE} (text set)\n")
-    print("| arm | group | tokens | mean KL | median KL | p99 KL | top-1 agree | PPL ref | PPL arm |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| arm | group | tokens | mean KL | median | p90 | p99 | p99.9 | max | same top | "
+          "PPL ref | PPL arm |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for arm, groups in r["text"].items():
         for g, s in groups.items():
             print(f"| {arm} | {g} | {s['n']:,} | {s['kl_mean']:.4f} | {s['kl_median']:.4f} | "
-                  f"{s['kl_p99']:.3f} | {s['top1_agree']:.1%} | {s['ppl_ref']:.3f} | {s['ppl_arm']:.3f} |")
+                  f"{s['kl_p90']:.3f} | {s['kl_p99']:.3f} | {s['kl_p999']:.3f} | {s['kl_max']:.2f} | "
+                  f"{s['top1_agree']:.1%} | {s['ppl_ref']:.3f} | {s['ppl_arm']:.3f} |")
     print("\n## Multiple choice (reasoning_effort=none, letter logits)\n")
-    print(f"| set | arm | n | accuracy | 95% CI | Δ vs {REFERENCE} | same answer | McNemar p | letter top-1 |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print(f"| set | arm | n | accuracy | 95% CI | Δ vs {REFERENCE} | flips (−/+) | same answer | "
+          "McNemar p | letter top-1 |")
+    print("|---|---|---|---|---|---|---|---|---|---|")
     for name, arms in r["mc"].items():
         for arm, e in arms.items():
             lo, hi = e["ci95"]
             delta = f"{e['delta_acc']:+.1%}" if "delta_acc" in e else ""
             same = f"{e['same_answer']:.1%}" if "same_answer" in e else ""
             p = f"{e['mcnemar_p']:.3f}" if "mcnemar_p" in e else ""
+            flips = (f"{e['flip_rate']:.1%} ({e['ref_only']}/{e['arm_only']})"
+                     if "flips" in e else "")
             print(f"| {name} | {arm} | {e['n']} | {e['acc']:.1%} | {lo:.1%}–{hi:.1%} | {delta} | "
-                  f"{same} | {p} | {e['letter_top1']:.1%} |")
+                  f"{flips} | {same} | {p} | {e['letter_top1']:.1%} |")
 
 
 def main(profile=None, doc=__doc__):

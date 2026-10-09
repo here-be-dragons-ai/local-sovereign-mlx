@@ -6,7 +6,7 @@ plus the two measurement scripts).
 
 | file | content |
 |---|---|
-| `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy, text sources |
+| `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy and flips, text sources (report re-run 2026-10-09 with p90 / p99.9 / max and flips; earlier values unchanged) |
 | `per-question-2026-10-08.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
 | `ttft-2026-10-08.jsonl` | one line per TTFT request, with server flags and versions |
 | `ttft-reserve-2026-10-08.jsonl` | the same with `APC_MEMORY_RESERVE_GB=1.5`, one run up to 64k |
@@ -26,10 +26,18 @@ pinned revisions (`sources` in the JSON), German and English, 4096-token
 windows. "post" articles were created after Kolibri's knowledge cutoff
 (2026-06-18).
 
-| arm | bits/weight | mean KL | median KL | p99 KL | top-1 agreement | PPL (FP8: 16.98) |
-|---|---|---|---|---|---|---|
-| 3/6-bit (shipped) | 3.61 | 0.114 | 0.021 | 2.07 | 88.9% | 17.11 |
-| uniform 3-bit | 3.51 | 0.376 | 0.138 | 5.42 | 76.5% | 19.38 |
+| arm | bits/weight | mean KL | median | p90 | p99 | p99.9 | max | same top | PPL (FP8: 16.98) |
+|---|---|---|---|---|---|---|---|---|---|
+| 3/6-bit (shipped) | 3.61 | 0.114 | 0.021 | 0.133 | 2.07 | 10.3 | 19.8 | 88.9% | 17.11 |
+| uniform 3-bit | 3.51 | 0.376 | 0.138 | 0.694 | 5.42 | 13.1 | 23.5 | 76.5% | 19.38 |
+
+The columns follow `llama-perplexity --kl-divergence`, the numbers Unsloth
+reports for its GGUFs (percentiles by nearest rank; "same top" is top-1
+agreement). The tail is heavy: one token in a thousand has a KL above 10
+nats in the shipped build: there its next-token distribution differs
+drastically from FP8's. The mean hides this. For scale, Unsloth's 4-bit GGUFs
+of Qwen3.5 / Qwen3.8 report p99.9 between about 0.4 and 0.8, at ~4.5 bits per
+weight and on their own text.
 
 By language, the shipped build: German mean KL 0.106, English 0.121; before /
 after the cutoff 0.110 / 0.101 (de) and 0.092 / 0.155 (en).
@@ -45,12 +53,17 @@ needs llama.cpp's logit file format for the reference.
 options A-D in the user turn, scored by the letter logits at the first answer
 position. Δ and McNemar (exact, two-sided) are paired against FP8.
 
-| set | FP8 | 3/6-bit (shipped) | Δ | p | uniform 3-bit | Δ | p |
-|---|---|---|---|---|---|---|---|
-| Belebele de (900) | 92.9% | 93.1% | +0.2 pp | 0.80 | 92.0% | −0.9 pp | 0.23 |
-| Belebele en (900) | 95.2% | 94.8% | −0.4 pp | 0.45 | 93.6% | −1.7 pp | 0.006 |
-| Global-MMLU-Lite de (400) | 72.5% | 71.2% | −1.2 pp | 0.30 | 68.5% | −4.0 pp | 0.011 |
-| Global-MMLU-Lite en (400) | 73.8% | 72.0% | −1.8 pp | 0.14 | 72.0% | −1.8 pp | 0.21 |
+| set | FP8 | 3/6-bit (shipped) | Δ | flips | p | uniform 3-bit | Δ | flips | p |
+|---|---|---|---|---|---|---|---|---|---|
+| Belebele de (900) | 92.9% | 93.1% | +0.2 pp | 1.8% (7/9) | 0.80 | 92.0% | −0.9 pp | 3.8% (21/13) | 0.23 |
+| Belebele en (900) | 95.2% | 94.8% | −0.4 pp | 1.8% (10/6) | 0.45 | 93.6% | −1.7 pp | 3.0% (21/6) | 0.006 |
+| Global-MMLU-Lite de (400) | 72.5% | 71.2% | −1.2 pp | 3.8% (10/5) | 0.30 | 68.5% | −4.0 pp | 9.0% (26/10) | 0.011 |
+| Global-MMLU-Lite en (400) | 73.8% | 72.0% | −1.8 pp | 4.2% (12/5) | 0.14 | 72.0% | −1.8 pp | 5.8% (15/8) | 0.21 |
+
+Flips ("Accuracy is Not All You Need", Dutta et al. 2024): questions that turn
+from right to wrong or from wrong to right against FP8, in brackets the two
+directions (right → wrong / wrong → right). On Global-MMLU-Lite en both builds
+lose the same 1.8 points, but uniform 3-bit gets there with more flips.
 
 95% Wilson intervals are in the JSON (about ±1.5 pp for Belebele, ±4.5 pp for
 Global-MMLU-Lite). The shipped build gives the same answer as FP8 on 95-98% of

@@ -7,7 +7,7 @@ plus `measure-apertus-quality.py`). Same instrument and data as
 
 | file | content |
 |---|---|
-| `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy, text sources |
+| `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy and flips, text sources (report re-run 2026-10-09 with p90 / p99.9 / max and flips; earlier values unchanged) |
 | `per-question-2026-10-08.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
 
 ## Quality
@@ -27,10 +27,14 @@ pinned revisions (`sources` in the JSON), German and English, 4096-token
 windows. Perplexities are per Apertus token and not comparable with
 Kolibri's.
 
-| arm | bits/weight | mean KL | median KL | p99 KL | top-1 agreement | PPL (bf16: 7.047) |
-|---|---|---|---|---|---|---|
-| 8-bit (shipped) | 8.5 | 0.0024 | 0.0009 | 0.025 | 97.7% | 7.048 |
-| 4-bit RTN | 4.5 | 0.202 | 0.090 | 1.83 | 79.9% | 8.210 |
+| arm | bits/weight | mean KL | median | p90 | p99 | p99.9 | max | same top | PPL (bf16: 7.047) |
+|---|---|---|---|---|---|---|---|---|---|
+| 8-bit (shipped) | 8.5 | 0.0024 | 0.0009 | 0.005 | 0.025 | 0.072 | 2.74 | 97.7% | 7.048 |
+| 4-bit RTN | 4.5 | 0.202 | 0.090 | 0.471 | 1.83 | 4.19 | 17.4 | 79.9% | 8.210 |
+
+Columns as `llama-perplexity --kl-divergence` reports them (see
+[`docs/kolibri-quality/`](../kolibri-quality/README.md)). Even the worst token
+in a thousand stays below 0.1 nats in the 8-bit build.
 
 By language, 8-bit: German mean KL 0.0022, English 0.0026. 4-bit: German
 0.180, English 0.223. The "pre" / "post" split of the text set is Kolibri's
@@ -41,12 +45,14 @@ knowledge cutoff (2026-06-18); it is in the JSON but means nothing here.
 logits at the first answer position. Δ and McNemar (exact, two-sided) are
 paired against bf16.
 
-| set | bf16 | 8-bit (shipped) | Δ | p | 4-bit RTN | Δ | p |
-|---|---|---|---|---|---|---|---|
-| Belebele de (900) | 82.6% | 82.9% | +0.3 pp | 0.55 | 73.7% | −8.9 pp | <0.001 |
-| Belebele en (900) | 89.3% | 89.3% | ±0 pp | 1.00 | 85.2% | −4.1 pp | <0.001 |
-| Global-MMLU-Lite de (400) | 62.0% | 61.8% | −0.2 pp | 1.00 | 56.5% | −5.5 pp | 0.005 |
-| Global-MMLU-Lite en (400) | 68.0% | 68.0% | ±0 pp | 1.00 | 63.5% | −4.5 pp | 0.022 |
+| set | bf16 | 8-bit (shipped) | Δ | flips | p | 4-bit RTN | Δ | flips | p |
+|---|---|---|---|---|---|---|---|---|---|
+| Belebele de (900) | 82.6% | 82.9% | +0.3 pp | 1.2% (4/7) | 0.55 | 73.7% | −8.9 pp | 12.4% (96/16) | <0.001 |
+| Belebele en (900) | 89.3% | 89.3% | ±0 pp | 0.7% (3/3) | 1.00 | 85.2% | −4.1 pp | 7.7% (53/16) | <0.001 |
+| Global-MMLU-Lite de (400) | 62.0% | 61.8% | −0.2 pp | 1.2% (3/2) | 1.00 | 56.5% | −5.5 pp | 14.0% (39/17) | 0.005 |
+| Global-MMLU-Lite en (400) | 68.0% | 68.0% | ±0 pp | 1.0% (2/2) | 1.00 | 63.5% | −4.5 pp | 14.0% (37/19) | 0.022 |
+
+Flips: questions that turn right → wrong / wrong → right against bf16.
 
 95% Wilson intervals are in the JSON. The 8-bit build gives the same answer as
 bf16 on 98-99% of the questions; it is lossless within what these sets can

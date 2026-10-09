@@ -339,8 +339,9 @@ the weights are. Measured peak: 35.3 GB on short prompts, 38.0 GiB at 96k.
 **Quality** against the FP8 release, same harness for both
 (`measure-kolibri-quality.py`, 2026-10-08; details and raw data in
 [`docs/kolibri-quality/`](docs/kolibri-quality/README.md)): mean KL 0.114
-(median 0.021), top-1 token agreement 88.9%, perplexity 17.11 against 16.98 on
-76k tokens of German and English prose. On Belebele and Global-MMLU-Lite
+(median 0.021, but p99.9 10.3: one token in a thousand diverges strongly),
+top-1 token agreement 88.9%, perplexity 17.11 against 16.98 on 76k tokens of
+German and English prose. On Belebele and Global-MMLU-Lite
 (de/en, multiple choice without reasoning) the 3-bit build is within +0.2 to
 −1.8 points of the original, none of it significant. A uniform 3-bit control
 loses significantly (KL 0.376, up to −4.0 points), which is what the 6-bit
