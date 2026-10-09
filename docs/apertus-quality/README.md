@@ -106,14 +106,60 @@ bf16 on every question (0 flips on all sets).
 | … de, culturally agnostic (200) | 64.5% | 65.0% | +0.5 (−1.0 to +2.0) | no | 0/1 | 61.0% | −3.5 (−8.0 to +1.1) | no | 14/7 |
 | … en, culturally sensitive (200) | 67.0% | 68.0% | +1.0 (−0.8 to +2.8) | no | 0/2 | 62.5% | −4.5 (−10.0 to +1.0) | no | 20/11 |
 | … en, culturally agnostic (200) | 69.0% | 68.0% | −1.0 (−2.8 to +0.8) | no | 2/0 | 64.5% | −4.5 (−9.4 to +0.5) | no | 17/8 |
+| Belebele Maltese (900) | 72.0% | 72.6% | +0.6 (−0.4 to +1.5) | no | 6/11 | 60.1% | −11.9 (−14.4 to −9.4) | no | 125/18 |
+| Belebele Latvian (900) | 81.2% | 81.1% | −0.1 (−0.8 to +0.6) | yes | 5/4 | 71.7% | −9.6 (−12.1 to −7.1) | no | 113/27 |
+| Belebele Estonian (900) | 79.0% | 78.8% | −0.2 (−1.2 to +0.7) | yes | 9/7 | 67.6% | −11.4 (−14.0 to −8.8) | no | 128/25 |
+| Belebele Lithuanian (900) | 81.2% | 81.0% | −0.2 (−1.3 to +0.8) | no | 11/9 | 72.6% | −8.7 (−11.3 to −6.1) | no | 112/34 |
+| Belebele de, options shifted (900) | 81.8% | 81.7% | −0.1 (−0.8 to +0.6) | yes | 4/3 | 72.0% | −9.8 (−12.0 to −7.5) | no | 101/13 |
+| Belebele en, options shifted (900) | 88.8% | 88.8% | +0.0 (−0.9 to +0.9) | yes | 6/6 | 84.1% | −4.7 (−6.5 to −2.9) | no | 56/14 |
+| Global-MMLU-Lite de, options shifted (400) | 61.5% | 62.0% | +0.5 (−0.8 to +1.8) | no | 2/4 | 54.2% | −7.2 (−11.2 to −3.2) | no | 49/20 |
+| Global-MMLU-Lite en, options shifted (400) | 67.5% | 67.5% | +0.0 (−0.9 to +0.9) | yes | 1/1 | 64.2% | −3.2 (−6.6 to +0.1) | no | 30/17 |
 
-For the 8-bit build, equivalence within ±1 point holds on Belebele de and en
-and Global-MMLU-Lite en. On Global-MMLU-Lite de no difference is detectable,
-but 400 questions are too few to show equivalence within ±1 point; the same
-holds for the 200-question subgroups. Its flips are balanced. The 4-bit
-control loses 4 to 9 points with flips running clearly one way (e.g. 96 to 16
-on Belebele de), a systematic loss rather than noise; on Global-MMLU-Lite de
-it loses most on the culturally sensitive questions (−7.5 points).
+For the 8-bit build, equivalence within ±1 point holds on Belebele de and en,
+Global-MMLU-Lite en, Latvian and Estonian, and on the shifted versions where
+the sample allows it. On Global-MMLU-Lite de, Maltese and Lithuanian no
+difference is detectable, but the intervals reach just past ±1 point. Its
+flips are balanced everywhere. The 4-bit control loses 4 to 12 points with
+flips running clearly one way; it loses most in the less-represented
+languages (Maltese −11.9, Estonian −11.4, Latvian −9.6, Lithuanian −8.7
+points), more than in German (−8.9) and English (−4.1). On
+Global-MMLU-Lite de it loses most on the culturally sensitive questions
+(−7.5 points).
+
+The four less-represented languages use the English instruction with
+passage, question and options in the language (Irish is not in Belebele).
+
+### Position bias
+
+The four German and English sets were run again with the options shifted by
+one position (A→B … D→A, answers remapped). "Same option chosen" is the share
+of questions where the model picks the same content in both orders.
+
+| set | arm | accuracy | options shifted | same option chosen | predicted A/B/C/D |
+|---|---|---|---|---|---|
+| Belebele de (900) | bf16 | 82.6% | 81.8% | 90.3% | 24% / 28% / 27% / 21% |
+| Belebele de (900) | 8-bit (shipped) | 82.9% | 81.7% | 90.7% | 25% / 27% / 26% / 22% |
+| Belebele de (900) | 4-bit RTN | 73.7% | 72.0% | 82.2% | 24% / 27% / 26% / 23% |
+| Belebele de (900) | correct answers | | | | 23% / 28% / 27% / 22% |
+| Belebele en (900) | bf16 | 89.3% | 88.8% | 94.0% | 24% / 27% / 26% / 23% |
+| Belebele en (900) | 8-bit (shipped) | 89.3% | 88.8% | 93.2% | 24% / 27% / 26% / 22% |
+| Belebele en (900) | 4-bit RTN | 85.2% | 84.1% | 88.6% | 24% / 26% / 28% / 22% |
+| Belebele en (900) | correct answers | | | | 23% / 28% / 27% / 22% |
+| Global-MMLU-Lite de (400) | bf16 | 62.0% | 61.5% | 79.0% | 22% / 33% / 23% / 22% |
+| Global-MMLU-Lite de (400) | 8-bit (shipped) | 61.8% | 62.0% | 80.5% | 22% / 33% / 23% / 22% |
+| Global-MMLU-Lite de (400) | 4-bit RTN | 56.5% | 54.2% | 68.8% | 20% / 34% / 26% / 21% |
+| Global-MMLU-Lite de (400) | correct answers | | | | 24% / 27% / 24% / 25% |
+| Global-MMLU-Lite en (400) | bf16 | 68.0% | 67.5% | 79.2% | 25% / 30% / 25% / 20% |
+| Global-MMLU-Lite en (400) | 8-bit (shipped) | 68.0% | 67.5% | 79.5% | 26% / 29% / 25% / 20% |
+| Global-MMLU-Lite en (400) | 4-bit RTN | 63.5% | 64.2% | 76.0% | 22% / 31% / 26% / 22% |
+| Global-MMLU-Lite en (400) | correct answers | | | | 24% / 27% / 24% / 25% |
+
+Even bf16 picks a different option after the shift on 6 to 21% of the
+questions, so part of every multiple-choice score here depends on the order;
+the 8-bit build is as order-dependent as bf16, 4-bit RTN more so (69% instead
+of 79% on Global-MMLU-Lite de). On Global-MMLU-Lite the model prefers "B"
+(about 30–33% of answers against 27% correct "B"). Accuracy changes by at most
+about one point between the orders.
 
 These are likelihood scores without reasoning: they show what the
 quantization changes and are not comparable with published benchmark scores.

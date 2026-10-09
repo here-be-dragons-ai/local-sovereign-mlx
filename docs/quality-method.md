@@ -50,7 +50,16 @@ and SHA-256 hashes are in `sources` per set in the result JSON.
 ## Multiple choice
 
 - **Sets**: Belebele `deu_Latn` / `eng_Latn` (900 each), Global-MMLU-Lite
-  `de` / `en` (400 each, split into culturally sensitive and agnostic).
+  `de` / `en` (400 each, split into culturally sensitive and agnostic), and
+  Belebele in four less-represented EU languages: Maltese, Latvian, Estonian,
+  Lithuanian (900 each). For those four, passage, question and options are in
+  the language and the instruction is the English one, so no translation of
+  ours enters the prompt.
+- **Position bias**: the four German and English sets are run a second time
+  with the options shifted by one position (A→B, B→C, C→D, D→A, answer
+  remapped). An answer that follows the content picks the same option in both
+  orders; the report gives that share, the accuracy in both orders and the
+  distribution of the predicted letters.
 - **Prompt**: zero-shot, through the model's chat template as a single user
   turn, with the options as `A) … D)`:
 
@@ -83,6 +92,5 @@ quantization changes and are not comparable with published benchmark scores.
 ## Not covered yet
 
 Long generation (reasoning chains, long context, instruction following,
-code), baselines beyond our own controls, multiple choice in less-represented
-languages, and a run with permuted answer order against position bias; see
+code), baselines beyond our own controls, Irish (not in Belebele); see
 here-be-dragons-ai/sovereign-models#8.

@@ -128,6 +128,8 @@ EU_LANGS = (
     "ron_Latn slk_Latn slv_Latn spa_Latn swe_Latn"
 ).split()
 EU_PASSAGES = 20
+# Multiple choice in less-represented EU languages (#19).
+BELEBELE_EU = {"mlt": "mlt_Latn", "lvs": "lvs_Latn", "est": "est_Latn", "lit": "lit_Latn"}
 OASST2 = ("OpenAssistant/oasst2", "179dd21fc55192153d94adb0e0ce8f69e222bf75",
           "2023-11-05_oasst2_ready.trees.jsonl.gz")
 CHAT_LEN = 16384
@@ -260,6 +262,8 @@ def cmd_prepare(args):
         "flores-eu": (prepare_flores_eu, "flores-eu"),
         "chat": (prepare_chat, "chat"),
         "tools": (prepare_tools, "tools"),
+        "belebele-eu": (prepare_belebele_eu, "belebele-mlt"),
+        "perm": (prepare_perm, "belebele-de-perm"),
     }
     names = args.sets.split(",") if args.sets else [
         n for n, (_, f) in builders.items() if not (data / "sets" / f"{f}.json").exists()
@@ -269,9 +273,7 @@ def cmd_prepare(args):
 
 
 def prepare_core(data, tok):
-    letter_ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
-    if any(len(i) != 1 for i in letter_ids) or len({i[0] for i in letter_ids}) != 4:
-        sys.exit(f"answer letters are not four distinct single tokens: {letter_ids}")
+    letter_ids = _letter_ids(tok)
 
     # Text set.
     seqs, meta, sources = [], [], []
@@ -295,40 +297,91 @@ def prepare_core(data, tok):
     )
     _write_set(data, "text", "all", seqs, meta, {"sources": sources})
 
-    # Belebele.
+    # Belebele and Global-MMLU-Lite.
+    for lang, fname in BELEBELE[1].items():
+        _write_set(data, f"belebele-{lang}", "last", *_belebele_mc(tok, fname, lang),
+                   {"letter_ids": letter_ids})
+    for lang in ("de", "en"):
+        _write_set(data, f"gmmlu-{lang}", "last", *_gmmlu_mc(data, tok, lang),
+                   {"letter_ids": letter_ids})
+
+
+def _letter_ids(tok):
+    ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
+    if any(len(i) != 1 for i in ids) or len({i[0] for i in ids}) != 4:
+        sys.exit(f"answer letters are not four distinct single tokens: {ids}")
+    return ids
+
+
+def _shift(options, answer, shift):
+    """Options in a cyclic order: option j is shown at position (j + shift) % 4."""
+    shown = [None] * 4
+    for j, o in enumerate(options):
+        shown[(j + shift) % 4] = o
+    return shown, (answer + shift) % 4
+
+
+def _belebele_mc(tok, fname, lang, shift=0, revision=None):
+    """Belebele questions through the chat template; `lang` picks the prompt."""
     from huggingface_hub import hf_hub_download
 
-    repo, files = BELEBELE
-    for lang, fname in files.items():
-        path = hf_hub_download(repo, fname, repo_type="dataset")
-        seqs, meta = [], []
-        for line in open(path):
-            q = json.loads(line)
-            user = PROMPT[lang].format(
-                context=PASSAGE[lang].format(p=q["flores_passage"]),
-                question=q["question"],
-                a=q["mc_answer1"], b=q["mc_answer2"], c=q["mc_answer3"], d=q["mc_answer4"],
-            )
-            seqs.append(chat_ids(tok, user))
-            meta.append({"id": f"{q['link']}#{q['question_number']}",
-                         "answer": LETTERS[int(q["correct_answer_num"]) - 1]})
-        _write_set(data, f"belebele-{lang}", "last", seqs, meta, {"letter_ids": letter_ids})
+    path = hf_hub_download(BELEBELE[0], fname, repo_type="dataset", revision=revision)
+    seqs, meta = [], []
+    for line in open(path):
+        q = json.loads(line)
+        opts, ans = _shift([q[f"mc_answer{i}"] for i in range(1, 5)],
+                           int(q["correct_answer_num"]) - 1, shift)
+        user = PROMPT[lang].format(
+            context=PASSAGE[lang].format(p=q["flores_passage"]), question=q["question"],
+            a=opts[0], b=opts[1], c=opts[2], d=opts[3],
+        )
+        seqs.append(chat_ids(tok, user))
+        m = {"id": f"{q['link']}#{q['question_number']}", "answer": LETTERS[ans]}
+        if shift:
+            m["shift"] = shift
+        meta.append(m)
+    return seqs, meta
 
-    # Global-MMLU-Lite.
+
+def _gmmlu_mc(data, tok, lang, shift=0):
+    raw = data / "raw" / f"gmmlu-lite-{lang}.json"
+    if not raw.exists():
+        raw.write_text(json.dumps(fetch_gmmlu(lang), ensure_ascii=False))
+    seqs, meta = [], []
+    for q in json.loads(raw.read_text()):
+        opts, ans = _shift([q[f"option_{c}"] for c in "abcd"],
+                           LETTERS.index(q["answer"].strip()), shift)
+        user = PROMPT[lang].format(context="", question=q["question"],
+                                   a=opts[0], b=opts[1], c=opts[2], d=opts[3])
+        seqs.append(chat_ids(tok, user))
+        m = {"id": q["sample_id"], "answer": LETTERS[ans],
+             "cultural": q.get("cultural_sensitivity_label")}
+        if shift:
+            m["shift"] = shift
+        meta.append(m)
+    return seqs, meta
+
+
+def prepare_belebele_eu(data, tok):
+    """Belebele in less-represented EU languages. Passage, question and options
+    in the language; the instruction in English, so no translation of ours."""
+    for code, lang in BELEBELE_EU.items():
+        _write_set(data, f"belebele-{code}", "last",
+                   *_belebele_mc(tok, f"data/{lang}.jsonl", "en", revision=BELEBELE_REV),
+                   {"letter_ids": _letter_ids(tok)})
+
+
+def prepare_perm(data, tok):
+    """The core multiple-choice sets with the options shifted by one position
+    (A->B, B->C, C->D, D->A): position bias shows as answers that follow the
+    letter instead of the content."""
+    for lang, fname in BELEBELE[1].items():
+        _write_set(data, f"belebele-{lang}-perm", "last",
+                   *_belebele_mc(tok, fname, lang, shift=1, revision=BELEBELE_REV),
+                   {"letter_ids": _letter_ids(tok)})
     for lang in ("de", "en"):
-        raw = data / "raw" / f"gmmlu-lite-{lang}.json"
-        if not raw.exists():
-            raw.write_text(json.dumps(fetch_gmmlu(lang), ensure_ascii=False))
-        seqs, meta = [], []
-        for q in json.loads(raw.read_text()):
-            user = PROMPT[lang].format(
-                context="", question=q["question"],
-                a=q["option_a"], b=q["option_b"], c=q["option_c"], d=q["option_d"],
-            )
-            seqs.append(chat_ids(tok, user))
-            meta.append({"id": q["sample_id"], "answer": q["answer"].strip(),
-                         "cultural": q.get("cultural_sensitivity_label")})
-        _write_set(data, f"gmmlu-{lang}", "last", seqs, meta, {"letter_ids": letter_ids})
+        _write_set(data, f"gmmlu-{lang}-perm", "last", *_gmmlu_mc(data, tok, lang, shift=1),
+                   {"letter_ids": _letter_ids(tok)})
 
 
 def _fetch_raw(data, name, url):
@@ -1007,6 +1060,35 @@ def cmd_report(args):
                                          [(sc["correct"][i], sc["preds"][i]) for i in idx]))
                 grp[arm] = entry
 
+    # Position bias (#20): the same questions with the options shifted. An
+    # answer that follows the content picks the same option in both orders.
+    result["position"] = {}
+    for name, st in sets.items():
+        base = name[: -len("-perm")]
+        if not name.endswith("-perm") or base not in sets:
+            continue
+        shift = st["meta"][0]["shift"]
+        res = {}
+        for arm in arms:
+            p0, p1 = hidden_path(data, arm, base), hidden_path(data, arm, name)
+            if not (p0.exists() and p1.exists()):
+                continue
+            s0 = mc_scores(mx.load(str(p0))["h"], heads[arm], st["letter_ids"], sets[base]["meta"])
+            s1 = mc_scores(mx.load(str(p1))["h"], heads[arm], st["letter_ids"], st["meta"])
+            back = [LETTERS[(LETTERS.index(x) - shift) % 4] for x in s1["preds"]]
+            n = len(back)
+            res[arm] = {
+                "n": n,
+                "acc": sum(s0["correct"]) / n,
+                "acc_shifted": sum(s1["correct"]) / n,
+                "same_option": sum(a == b for a, b in zip(s0["preds"], back)) / n,
+                "letters": {c: s0["preds"].count(c) / n for c in LETTERS},
+                "letters_shifted": {c: s1["preds"].count(c) / n for c in LETTERS},
+                "answers": {c: sum(m["answer"] == c for m in sets[base]["meta"]) / n
+                            for c in LETTERS},
+            }
+        result["position"][base] = res
+
     out = data / "results" / f"quality-{result['date']}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=1))
@@ -1014,6 +1096,7 @@ def cmd_report(args):
         for row in per_question:
             fh.write(json.dumps(row) + "\n")
     _print_report(result)
+    _print_position(result)
     log(f"raw: {out}")
 
 
@@ -1070,6 +1153,21 @@ def _print_report(r):
                   f"{e['same_answer']:.1%} | {top1} |")
 
 
+def _print_position(r):
+    if not r.get("position"):
+        return
+    print("\n## Position bias: options shifted by one (A→B … D→A)\n")
+    print("| set | arm | accuracy | shifted | same option chosen | predicted A/B/C/D | "
+          "correct A/B/C/D |")
+    print("|---|---|---|---|---|---|---|")
+    for base, arms in r["position"].items():
+        for arm, e in arms.items():
+            pred = "/".join(f"{e['letters'][c]:.0%}" for c in LETTERS)
+            ans = "/".join(f"{e['answers'][c]:.0%}" for c in LETTERS)
+            print(f"| {base} | {arm} | {e['acc']:.1%} | {e['acc_shifted']:.1%} | "
+                  f"{e['same_option']:.1%} | {pred} | {ans} |")
+
+
 def main(profile=None, doc=__doc__):
     ap = argparse.ArgumentParser(description=doc.split("\n\n")[0])
     if profile is None:
@@ -1077,7 +1175,8 @@ def main(profile=None, doc=__doc__):
     ap.add_argument("--data", type=Path, help="data directory (default: the profile's)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare")
-    p.add_argument("--sets", help="core,calib-v5,flores-eu,chat,tools (default: all not yet built)")
+    p.add_argument("--sets", help="core,calib-v5,flores-eu,chat,tools,belebele-eu,perm "
+                   "(default: all not yet built)")
     p = sub.add_parser("check")
     p.add_argument("--ckpt", help="default: the profile's tokenizer build")
     p = sub.add_parser("forward")

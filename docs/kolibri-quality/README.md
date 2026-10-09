@@ -131,14 +131,56 @@ advance; flips are right → wrong / wrong → right.
 | … de, culturally agnostic (200) | 77.5% | 78.0% | +0.5 (−2.1 to +3.1) | no | 2/3 | 74.0% | −3.5 (−7.7 to +0.7) | no | 12/5 |
 | … en, culturally sensitive (200) | 68.5% | 66.5% | −2.0 (−5.6 to +1.5) | no | 8/4 | 65.5% | −3.0 (−6.8 to +0.8) | no | 10/4 |
 | … en, culturally agnostic (200) | 79.0% | 77.5% | −1.5 (−4.1 to +1.0) | no | 4/1 | 78.5% | −0.5 (−3.8 to +2.7) | no | 5/4 |
+| Belebele Maltese (900) | 46.1% | 48.1% | +2.0 (−0.1 to +4.1) | no | 37/55 | – | – | – | – |
+| Belebele Latvian (900) | 65.3% | 66.1% | +0.8 (−1.1 to +2.6) | no | 32/39 | – | – | – | – |
+| Belebele Estonian (900) | 58.9% | 59.6% | +0.7 (−1.2 to +2.5) | no | 32/38 | – | – | – | – |
+| Belebele Lithuanian (900) | 63.0% | 63.6% | +0.6 (−1.1 to +2.2) | no | 25/30 | – | – | – | – |
+| Belebele de, options shifted (900) | 92.3% | 92.1% | −0.2 (−1.0 to +0.6) | yes | 6/4 | – | – | – | – |
+| Belebele en, options shifted (900) | 94.1% | 93.8% | −0.3 (−1.0 to +0.3) | yes | 4/1 | – | – | – | – |
+| Global-MMLU-Lite de, options shifted (400) | 69.0% | 67.2% | −1.8 (−4.2 to +0.7) | no | 15/8 | – | – | – | – |
+| Global-MMLU-Lite en, options shifted (400) | 73.5% | 71.8% | −1.8 (−4.4 to +0.9) | no | 17/10 | – | – | – | – |
 
-No set shows equivalence within ±1 point for either build: the intervals are
-wider than the margin (Kolibri flips more answers than Apertus 8-bit, so the
-paired intervals are wider too). For the shipped build no difference is
-detectable on any set; its flips lean slightly towards losses on
+Equivalence within ±1 point holds only for the shifted Belebele sets; elsewhere
+the intervals are wider than the margin. For the shipped build no difference
+is detectable on any set; its flips lean slightly towards losses on
 Global-MMLU-Lite (10/5, 12/5), most on the culturally sensitive German
 questions (8/2, −3.0 points, interval −6.3 to +0.2). Uniform 3-bit loses
-significantly on Belebele en and Global-MMLU-Lite de.
+significantly on Belebele en and Global-MMLU-Lite de. The uniform control was
+not run on the sets added later (languages, shifted options).
+
+**Less-represented languages.** Kolibri is trained for German and English and
+it shows: Maltese 46%, Estonian 59%, Lithuanian 63%, Latvian 65% on Belebele,
+against 93% in German. The shipped build is not worse there than FP8 (+0.6 to
++2.0 points, not significant); in Maltese its flips even run towards correct
+answers (37 lost, 55 gained). The instruction is English, passage, question
+and options are in the language (Irish is not in Belebele).
+
+### Position bias
+
+The four German and English sets were run again with the options shifted by
+one position (A→B … D→A, answers remapped). "Same option chosen" is the share
+of questions where the model picks the same content in both orders.
+
+| set | arm | accuracy | options shifted | same option chosen | predicted A/B/C/D |
+|---|---|---|---|---|---|
+| Belebele de (900) | fp8 | 92.9% | 92.3% | 94.3% | 24% / 28% / 26% / 22% |
+| Belebele de (900) | 3/6-bit (shipped) | 93.1% | 92.1% | 94.9% | 24% / 29% / 26% / 22% |
+| Belebele de (900) | correct answers | | | | 23% / 28% / 27% / 22% |
+| Belebele en (900) | fp8 | 95.2% | 94.1% | 96.3% | 24% / 28% / 27% / 21% |
+| Belebele en (900) | 3/6-bit (shipped) | 94.8% | 93.8% | 95.9% | 23% / 28% / 27% / 22% |
+| Belebele en (900) | correct answers | | | | 23% / 28% / 27% / 22% |
+| Global-MMLU-Lite de (400) | fp8 | 72.5% | 69.0% | 78.8% | 21% / 35% / 25% / 19% |
+| Global-MMLU-Lite de (400) | 3/6-bit (shipped) | 71.2% | 67.2% | 77.5% | 21% / 37% / 24% / 18% |
+| Global-MMLU-Lite de (400) | correct answers | | | | 24% / 27% / 24% / 25% |
+| Global-MMLU-Lite en (400) | fp8 | 73.8% | 73.5% | 81.2% | 20% / 34% / 25% / 21% |
+| Global-MMLU-Lite en (400) | 3/6-bit (shipped) | 72.0% | 71.8% | 80.0% | 22% / 34% / 25% / 20% |
+| Global-MMLU-Lite en (400) | correct answers | | | | 24% / 27% / 24% / 25% |
+
+Kolibri is more stable than Apertus on Belebele (94–96% same option) and as
+order-dependent on Global-MMLU-Lite (78–81%), where it prefers "B" (34–37% of
+answers against 27% correct). The shipped build behaves like FP8. Accuracy on
+Global-MMLU-Lite de drops by 3.5 points for FP8 and 4.0 for the shipped build
+when the options are shifted, a sign of that preference.
 
 These are likelihood scores without reasoning: they show what the
 quantization changes and are not comparable with the scores on the original

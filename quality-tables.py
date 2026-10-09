@@ -27,6 +27,14 @@ MC_NAMES = {
     "gmmlu-de/CA": "… de, culturally agnostic (200)",
     "gmmlu-en/CS": "… en, culturally sensitive (200)",
     "gmmlu-en/CA": "… en, culturally agnostic (200)",
+    "belebele-mlt": "Belebele Maltese (900)",
+    "belebele-lvs": "Belebele Latvian (900)",
+    "belebele-est": "Belebele Estonian (900)",
+    "belebele-lit": "Belebele Lithuanian (900)",
+    "belebele-de-perm": "Belebele de, options shifted (900)",
+    "belebele-en-perm": "Belebele en, options shifted (900)",
+    "gmmlu-de-perm": "Global-MMLU-Lite de, options shifted (400)",
+    "gmmlu-en-perm": "Global-MMLU-Lite en, options shifted (400)",
 }
 
 
@@ -104,6 +112,23 @@ def mc_table(r, ref, arms, names):
         print(f"| {label} | " + " | ".join(cells) + " |")
 
 
+def position_table(r, ref, arms, names):
+    pos = r.get("position", {})
+    print("| set | arm | accuracy | options shifted | same option chosen | predicted A/B/C/D |")
+    print("|---|---|---|---|---|---|")
+    for base, res in pos.items():
+        for arm, name in [(ref, ref)] + list(zip(arms, names)):
+            e = res.get(arm)
+            if e:
+                pred = " / ".join(f"{e['letters'][c]:.0%}" for c in "ABCD")
+                print(f"| {MC_NAMES.get(base, base)} | {name} | {e['acc']:.1%} | "
+                      f"{e['acc_shifted']:.1%} | {e['same_option']:.1%} | {pred} |")
+        first = next(iter(res.values()), None)
+        if first:
+            ans = " / ".join(f"{first['answers'][c]:.0%}" for c in "ABCD")
+            print(f"| {MC_NAMES.get(base, base)} | correct answers | | | | {ans} |")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("result")
@@ -123,7 +148,10 @@ def main():
     eu_table(r, arms, names)
     print("\n### Multiple choice\n")
     mc_arms = args.mc_arms.split(",") if args.mc_arms else arms
-    mc_table(r, args.ref, mc_arms, [names[arms.index(a)] for a in mc_arms])
+    mc_names = [names[arms.index(a)] for a in mc_arms]
+    mc_table(r, args.ref, mc_arms, mc_names)
+    print("\n### Position bias\n")
+    position_table(r, args.ref, mc_arms, mc_names)
 
 
 if __name__ == "__main__":
