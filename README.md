@@ -336,16 +336,20 @@ per token in f16; the 40 sliding-window layers hold 513 tokens each. 96k
 tokens of context cost ~1.9 GiB, so the context is not the constraint here --
 the weights are. Measured peak: 35.3 GB on short prompts, 38.0 GiB at 96k.
 
-**Quality** against the FP8 release, same harness for both
-(`measure-kolibri-quality.py`, 2026-10-08; details and raw data in
-[`docs/kolibri-quality/`](docs/kolibri-quality/README.md)): mean KL 0.114
-(median 0.021, but p99.9 10.3: one token in a thousand diverges strongly),
-top-1 token agreement 88.9%, perplexity 17.11 against 16.98 on 76k tokens of
-German and English prose. On Belebele and Global-MMLU-Lite
-(de/en, multiple choice without reasoning) the 3-bit build is within +0.2 to
-−1.8 points of the original, none of it significant. A uniform 3-bit control
-loses significantly (KL 0.376, up to −4.0 points), which is what the 6-bit
-parts are for.
+**Quality** against the FP8 release (`measure-kolibri-quality.py`,
+2026-10-09; method in [`docs/quality-method.md`](docs/quality-method.md),
+details and raw data in [`docs/kolibri-quality/`](docs/kolibri-quality/README.md)).
+Kolibri is numerically sensitive: the FP8 release run against itself with a
+different prefill chunking already differs by mean KL 0.036 (p99.9 5.7) on
+German and English Wikipedia, because tiny rounding differences tip its
+expert routing. Against that floor the 3/6-bit build sits at 2 to 3 times the
+noise on Wikipedia (mean KL 0.114), Calibration v5, tool calling and 23 EU
+languages, but clearly further out on chat (mean KL 0.40 against a floor of
+0.011, 73% same top token). On Belebele and Global-MMLU-Lite (de/en,
+multiple choice without reasoning) no difference to the original is
+detectable (+0.2 to −1.8 points); equivalence within ±1 point cannot be shown
+at these sample sizes. A uniform 3-bit control is worse on every set and
+loses significantly on two of them, which is what the 6-bit parts are for.
 
 **Speed** (M5 Pro / 48 GB, mlx-vlm 0.7.4, mlx 0.32.2; decode 2026-10-03,
 time to first token 2026-10-08 with `measure-kolibri-ttft.py`):

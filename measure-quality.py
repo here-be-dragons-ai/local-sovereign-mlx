@@ -44,6 +44,7 @@ LOGITS ARE COMPUTED IN FP32 ON THE CPU. On the GPU an fp32 matmul deviates by
 """
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -112,6 +113,28 @@ ARTICLES = [
 ]
 BELEBELE = ("facebook/belebele", {"de": "data/deu_Latn.jsonl", "en": "data/eng_Latn.jsonl"})
 GMMLU = "CohereLabs/Global-MMLU-Lite"
+
+# Sets beyond Wikipedia (Unsloth: quants calibrated on Wikipedia look good on
+# Wikipedia). Pinned to revisions; raw data stays in <data>/raw.
+CALIB_V5 = (
+    "https://gist.githubusercontent.com/tristandruyen/9e207a95c7d75ddf37525d353e00659c/raw/"
+    "571fda718462de863e5a0171078c175420c7649a/calibration_data_v5_rc.txt"
+)
+BELEBELE_REV = "7899cdfa4e1e0d733fd77c848e2c273cb1d32be2"
+# The official EU languages as Belebele has them; Irish (gle) is not in Belebele.
+EU_LANGS = (
+    "bul_Cyrl ces_Latn dan_Latn deu_Latn ell_Grek eng_Latn est_Latn fin_Latn fra_Latn "
+    "hrv_Latn hun_Latn ita_Latn lit_Latn lvs_Latn mlt_Latn nld_Latn pol_Latn por_Latn "
+    "ron_Latn slk_Latn slv_Latn spa_Latn swe_Latn"
+).split()
+EU_PASSAGES = 20
+OASST2 = ("OpenAssistant/oasst2", "179dd21fc55192153d94adb0e0ce8f69e222bf75",
+          "2023-11-05_oasst2_ready.trees.jsonl.gz")
+CHAT_LEN = 16384
+CHAT_SEQS = 2  # per language
+HERMES = ("NousResearch/hermes-function-calling-v1", "dae3e1d28cfbcf4b915c04ea1e072030529b4bda",
+          "func-calling.json")
+TOOL_CONVS = 40
 
 PROMPT = {
     "de": (
@@ -224,12 +247,28 @@ def chat_ids(tok, user):
 
 
 def cmd_prepare(args):
+    """Build the sets named in --sets, or all that do not exist yet."""
     from transformers import AutoTokenizer
 
     data = args.data
     (data / "raw").mkdir(parents=True, exist_ok=True)
     (data / "sets").mkdir(parents=True, exist_ok=True)
     tok = AutoTokenizer.from_pretrained(str(ckpt_path(TOKENIZER_ARM)))
+    builders = {
+        "core": (prepare_core, "text"),  # text, belebele-*, gmmlu-*
+        "calib-v5": (prepare_calib_v5, "calib-v5"),
+        "flores-eu": (prepare_flores_eu, "flores-eu"),
+        "chat": (prepare_chat, "chat"),
+        "tools": (prepare_tools, "tools"),
+    }
+    names = args.sets.split(",") if args.sets else [
+        n for n, (_, f) in builders.items() if not (data / "sets" / f"{f}.json").exists()
+    ]
+    for n in names:
+        builders[n][0](data, tok)
+
+
+def prepare_core(data, tok):
     letter_ids = [tok.encode(c, add_special_tokens=False) for c in LETTERS]
     if any(len(i) != 1 for i in letter_ids) or len({i[0] for i in letter_ids}) != 4:
         sys.exit(f"answer letters are not four distinct single tokens: {letter_ids}")
@@ -292,6 +331,213 @@ def cmd_prepare(args):
         _write_set(data, f"gmmlu-{lang}", "last", seqs, meta, {"letter_ids": letter_ids})
 
 
+def _fetch_raw(data, name, url):
+    raw = data / "raw" / name
+    if not raw.exists():
+        req = urllib.request.Request(url, headers=UA)
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw.write_bytes(resp.read())
+    return raw
+
+
+def _sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _windows(ids):
+    return [ids[i : i + WINDOW] for i in range(0, len(ids), WINDOW)
+            if len(ids[i : i + WINDOW]) >= MIN_WINDOW]
+
+
+def prepare_calib_v5(data, tok):
+    """Calibration v5 (bartowski / tristandruyen), the set Unsloth uses for fair KLD tests."""
+    raw = _fetch_raw(data, "calibration_data_v5_rc.txt", CALIB_V5)
+    seqs = _windows(tok.encode(raw.read_text(), add_special_tokens=False))
+    _write_set(data, "calib-v5", "all", seqs, [{"lang": "mixed"} for _ in seqs],
+               {"sources": [{"url": CALIB_V5, "sha256": _sha256(raw)}]})
+
+
+def prepare_flores_eu(data, tok):
+    """FLORES passages in the EU languages, via Belebele (FLORES+ itself is gated).
+
+    The first EU_PASSAGES distinct passages of each language file, in file
+    order, joined into one text per language.
+    """
+    from huggingface_hub import hf_hub_download
+
+    seqs, meta, sources = [], [], []
+    for lang in EU_LANGS:
+        path = hf_hub_download(BELEBELE[0], f"data/{lang}.jsonl", repo_type="dataset",
+                               revision=BELEBELE_REV)
+        passages = []
+        for line in open(path):
+            p = json.loads(line)["flores_passage"]
+            if p not in passages:
+                passages.append(p)
+            if len(passages) == EU_PASSAGES:
+                break
+        ids = tok.encode("\n\n".join(passages), add_special_tokens=False)
+        for w in _windows(ids) or [ids]:
+            seqs.append(w)
+            meta.append({"lang": lang})
+        sources.append({"lang": lang, "file": f"data/{lang}.jsonl", "sha256": _sha256(path)})
+    _write_set(data, "flores-eu", "all", seqs, meta,
+               {"sources": [{"repo": BELEBELE[0], "revision": BELEBELE_REV}] + sources})
+
+
+def _render(tok, msgs, tools=None, gen=False):
+    enc = tok.apply_chat_template(msgs, tools=tools, tokenize=True, add_generation_prompt=gen)
+    return list(enc["input_ids"] if hasattr(enc, "keys") else enc)
+
+
+def _common(a, b):
+    n = 0
+    while n < min(len(a), len(b)) and a[n] == b[n]:
+        n += 1
+    return n
+
+
+def _assistant_spans(tok, msgs, tools, full):
+    """[start, end) token ranges of the assistant turns in the rendered conversation.
+
+    Text turns are found by their content in the rendered string (templates
+    may render earlier turns differently from the last one, e.g. Kolibri drops
+    the empty think block before the last user turn); turns that are only tool
+    calls by the token prefix of the generation prompt and the turn itself.
+    """
+    text = tok.apply_chat_template(msgs, tools=tools, tokenize=False)
+    enc = tok(text, add_special_tokens=False, return_offsets_mapping=True)
+    if list(enc["input_ids"]) != full:
+        sys.exit("rendered text does not re-tokenize to the template's token ids")
+    offsets = enc["offset_mapping"]
+    spans, cursor = [], 0
+    for i, m in enumerate(msgs):
+        if m["role"] != "assistant":
+            continue
+        content = (m.get("content") or "").strip()
+        at = text.find(content, cursor) if content else -1
+        if at >= 0:
+            c0, c1 = at, at + len(content)
+            cursor = c1
+            toks = [t for t, (o0, o1) in enumerate(offsets) if o1 > c0 and o0 < c1]
+            spans.append([toks[0], toks[-1] + 1])
+        else:
+            start = _common(_render(tok, msgs[:i], tools, gen=True), full)
+            end = _common(_render(tok, msgs[: i + 1], tools), full)
+            spans.append([start, end])
+    return spans
+
+
+def _oasst_threads(path, lang):
+    """Best-ranked path through each conversation tree of one language."""
+    import gzip
+
+    threads = []
+    for line in gzip.open(path, "rt"):
+        tree = json.loads(line)
+        node = tree["prompt"]
+        if node.get("lang") != lang:
+            continue
+        msgs = []
+        while node:
+            role = "user" if node["role"] == "prompter" else "assistant"
+            msgs.append({"role": role, "content": node["text"]})
+            replies = node.get("replies") or []
+            node = min(replies, key=lambda r: (r.get("rank") is None, r.get("rank") or 0),
+                       default=None)
+        if msgs[-1]["role"] == "user":
+            msgs.pop()
+        if len(msgs) >= 2:
+            threads.append((tree["message_tree_id"], msgs))
+    threads.sort()
+    random.Random(0).shuffle(threads)
+    return threads
+
+
+def prepare_chat(data, tok):
+    """Long multi-turn chats (oasst2, de / en): threads chained into one dialogue
+    each, up to CHAT_LEN tokens through the chat template."""
+    from huggingface_hub import hf_hub_download
+
+    repo, rev, fname = OASST2
+    path = hf_hub_download(repo, fname, repo_type="dataset", revision=rev)
+    seqs, meta, spans = [], [], []
+    for lang in ("de", "en"):
+        threads = iter(_oasst_threads(path, lang))
+        for _ in range(CHAT_SEQS):
+            msgs, ids, used = [], [], []
+            for tid, thread in threads:
+                cand = _render(tok, msgs + thread)
+                if len(cand) > CHAT_LEN:
+                    if msgs:
+                        break
+                    continue
+                msgs, ids = msgs + thread, cand
+                used.append(tid)
+            seqs.append(ids)
+            spans.append(_assistant_spans(tok, msgs, None, ids))
+            meta.append({"lang": lang, "threads": used})
+    _write_set(data, "chat", "all", seqs, meta,
+               {"spans": spans, "sources": [{"repo": repo, "revision": rev, "file": fname,
+                                             "sha256": _sha256(path)}]})
+
+
+def _hermes_messages(conv):
+    """hermes-function-calling turns as chat messages with structured tool calls."""
+    import re
+
+    msgs = []
+    for turn in conv:
+        role, text = turn["from"], turn["value"]
+        if role == "system":
+            continue
+        if role == "human":
+            msgs.append({"role": "user", "content": text})
+        elif role == "gpt":
+            calls = [json.loads(c) for c in
+                     re.findall(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.S)]
+            content = re.sub(r"<tool_call>.*?</tool_call>", "", text, flags=re.S).strip()
+            m = {"role": "assistant", "content": content}
+            if calls:
+                m["tool_calls"] = [{"type": "function", "function": {
+                    "name": c["name"], "arguments": c.get("arguments", {})}} for c in calls]
+            msgs.append(m)
+        elif role == "tool":
+            for r in re.findall(r"<tool_response>\s*(.*?)\s*</tool_response>", text, re.S):
+                msgs.append({"role": "tool", "content": r})
+    return msgs
+
+
+def prepare_tools(data, tok):
+    """Tool-calling conversations (hermes-function-calling-v1, multi-turn), one per
+    sequence, with the tools passed to the chat template."""
+    from huggingface_hub import hf_hub_download
+
+    repo, rev, fname = HERMES
+    path = hf_hub_download(repo, fname, repo_type="dataset", revision=rev)
+    rows = json.load(open(path))
+    order = list(range(len(rows)))
+    random.Random(0).shuffle(order)
+    seqs, meta, spans = [], [], []
+    for i in order:
+        try:
+            tools = json.loads(rows[i]["tools"])
+            msgs = _hermes_messages(rows[i]["conversations"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if not any(m.get("tool_calls") for m in msgs) or msgs[-1]["role"] != "assistant":
+            continue
+        ids = _render(tok, msgs, tools)
+        seqs.append(ids)
+        spans.append(_assistant_spans(tok, msgs, tools, ids))
+        meta.append({"lang": "en", "id": rows[i]["id"]})
+        if len(seqs) == TOOL_CONVS:
+            break
+    _write_set(data, "tools", "all", seqs, meta,
+               {"spans": spans, "sources": [{"repo": repo, "revision": rev, "file": fname,
+                                             "sha256": _sha256(path)}]})
+
+
 def _write_set(data, name, score, seqs, meta, extra):
     body = {"name": name, "score": score, "seqs": seqs, "meta": meta, **extra}
     (data / "sets" / f"{name}.json").write_text(json.dumps(body, ensure_ascii=False))
@@ -328,11 +574,15 @@ def load_lazy(path):
     return model.language_model
 
 
-def streamed_forward(lm, seqs, keep_last, partial=None):
+def streamed_forward(lm, seqs, keep_last, partial=None, chunk=None):
     """Final normed hidden states, one decoder layer in memory at a time.
 
     Returns a list with one array per sequence: [L, H] or, with keep_last, [H].
     `partial` is a path for resume state, written every SAVE_EVERY layers.
+    With `chunk`, each sequence runs through a layer in pieces of that many
+    tokens against the layer's KV cache, the way a server prefills. Same
+    weights and math, a different order of floating-point operations: the
+    reference run this way gives the numerical noise floor.
     """
     import mlx.core as mx
     from mlx_vlm.models.base import create_attention_mask
@@ -353,18 +603,31 @@ def streamed_forward(lm, seqs, keep_last, partial=None):
             hs.append(h)
     inner.embed_tokens = None
 
+    # Fresh caches are copied from these; make_cache needs the layers, which
+    # are dropped one by one below.
+    protos = lm.make_cache() if chunk else None
     masks = {}
     for i in range(start, len(layers)):
         t0 = time.time()
         layer = layers[i]
+        sliding = getattr(layer, "use_sliding", False)
+        window = inner.sliding_window if sliding else None
         for j, h in enumerate(hs):
             L = h.shape[1]
-            sliding = getattr(layer, "use_sliding", False)
+            if chunk:
+                cache = copy.deepcopy(protos[i])
+                parts = []
+                for a in range(0, L, chunk):
+                    hc = h[:, a : a + chunk]
+                    parts.append(layer(hc, create_attention_mask(hc, cache, window_size=window),
+                                       cache))
+                    mx.eval(parts[-1])
+                hs[j] = mx.concatenate(parts, axis=1)
+                mx.eval(hs[j])
+                continue
             key = (L, sliding)
             if key not in masks:
-                masks[key] = create_attention_mask(
-                    h, None, window_size=inner.sliding_window if sliding else None
-                )
+                masks[key] = create_attention_mask(h, None, window_size=window)
             hs[j] = layer(h, masks[key])
             mx.eval(hs[j])
         layers[i] = None
@@ -399,6 +662,7 @@ def cmd_forward(args):
     arm = args.arm or args.ckpt
     sets = load_sets(args.data, args.sets.split(",") if args.sets else None)
     todo = [n for n in sets if not hidden_path(args.data, arm, n).exists()]
+    head_weight(path, head_path(args.data, arm))
     if not todo:
         log(f"{arm}: all sets done")
         return
@@ -409,7 +673,8 @@ def cmd_forward(args):
         log(f"{arm} / {name}: {len(st['seqs'])} sequences, {sum(map(len, st['seqs'])):,} tokens")
         lm = load_lazy(path)
         hs = streamed_forward(
-            lm, st["seqs"], st["score"] == "last", out.with_suffix(".partial.safetensors")
+            lm, st["seqs"], st["score"] == "last", out.with_suffix(".partial.safetensors"),
+            chunk=args.chunk,
         )
         if st["score"] == "last":
             mx.save_safetensors(str(out), {"h": mx.stack(hs)})
@@ -423,23 +688,42 @@ def cmd_forward(args):
 # ── heads and scoring ────────────────────────────────────────────────────────
 
 
-def head_weight(path):
-    """The arm's LM head as an fp32 matrix [V, H], dequantized if quantized."""
+def head_weight(path, cache=None):
+    """The arm's LM head as an fp32 matrix [V, H], dequantized if quantized.
+
+    With `cache` (a .safetensors path) the head's stored tensors are kept next
+    to the hidden states, so a report no longer needs the checkpoint.
+    """
     import mlx.core as mx
 
-    lm = load_lazy(path)
-    head = lm.lm_head
-    if hasattr(head, "scales"):
-        w = mx.dequantize(
-            head.weight, head.scales, getattr(head, "biases", None),
-            group_size=head.group_size, bits=head.bits, mode=getattr(head, "mode", "affine"),
-        )
+    if cache is not None and cache.exists():
+        t, meta = mx.load(str(cache), return_metadata=True)
     else:
-        w = head.weight
+        head = load_lazy(path).lm_head
+        t = {"weight": head.weight}
+        meta = {}
+        if hasattr(head, "scales"):
+            t["scales"] = head.scales
+            if getattr(head, "biases", None) is not None:
+                t["biases"] = head.biases
+            meta = {"group_size": str(head.group_size), "bits": str(head.bits),
+                    "mode": getattr(head, "mode", "affine")}
+        if cache is not None:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            mx.save_safetensors(str(cache), t, metadata=meta)
+    if "scales" in t:
+        w = mx.dequantize(t["weight"], t["scales"], t.get("biases"),
+                          group_size=int(meta["group_size"]), bits=int(meta["bits"]),
+                          mode=meta["mode"])
+    else:
+        w = t["weight"]
     w = w.astype(mx.float32)
     mx.eval(w)
-    del lm
     return w
+
+
+def head_path(data, arm):
+    return data / "hidden" / arm / "lm_head.safetensors"
 
 
 def cmd_check(args):
@@ -499,14 +783,74 @@ def _mcnemar(b, c):
     return min(1.0, 2 * p)
 
 
-def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, chunk=512):
-    """Per scored position: KL(ref||arm), top-1 agreement, NLL of both, group keys."""
+EQUIV_MARGIN = 0.01  # TOST margin: ±1 percentage point, fixed before the runs
+
+
+def _paired_diff_ci(a, b, c, d, z):
+    """Newcombe's hybrid score interval (method 10) for a paired difference.
+
+    Checked against Newcombe (1998), table on p. 2641, second row (20/12/2/16):
+    0.0562 to 0.3292, as StatsDirect and NCSS PASS report it.
+
+    a: both right, b: reference only, c: arm only, d: both wrong. Returns the
+    interval for acc(arm) - acc(ref) = (c - b) / n.
+    """
+    n = a + b + c + d
+    p1, p2 = (a + b) / n, (a + c) / n
+    l1, u1 = _wilson(a + b, n, z)
+    l2, u2 = _wilson(a + c, n, z)
+    den = math.sqrt((a + b) * (c + d) * (a + c) * (b + d))
+    num = a * d - b * c
+    if num > 0:
+        num = max(num - n / 2, 0.0)
+    phi = num / den if den else 0.0
+    diff = p2 - p1
+    dl = math.sqrt(max(0.0, (p2 - l2) ** 2 - 2 * phi * (p2 - l2) * (u1 - p1) + (u1 - p1) ** 2))
+    du = math.sqrt(max(0.0, (u2 - p2) ** 2 - 2 * phi * (u2 - p2) * (p1 - l1) + (p1 - l1) ** 2))
+    return (diff - dl, diff + du)
+
+
+def _paired(ref, arm):
+    """Paired comparison of one arm with the reference on the same questions.
+
+    ref, arm: lists of (correct, predicted letter). Flips (Dutta et al. 2024)
+    are right <-> wrong changes, split by direction; same_answer also counts
+    wrong -> other wrong. Equivalence by TOST: the 90% interval of the paired
+    difference (two one-sided tests at 5%) lies inside ±EQUIV_MARGIN.
+    """
+    n = len(ref)
+    a = sum(r and x for (r, _), (x, _) in zip(ref, arm))
+    b = sum(r and not x for (r, _), (x, _) in zip(ref, arm))
+    c = sum(x and not r for (r, _), (x, _) in zip(ref, arm))
+    d = n - a - b - c
+    ci90 = _paired_diff_ci(a, b, c, d, 1.6449)
+    return {
+        "same_answer": sum(p == q for (_, p), (_, q) in zip(ref, arm)) / n,
+        "delta_acc": (c - b) / n,
+        "delta_ci95": _paired_diff_ci(a, b, c, d, 1.96),
+        "delta_ci90": ci90,
+        "equivalent": -EQUIV_MARGIN < ci90[0] and ci90[1] < EQUIV_MARGIN,
+        "mcnemar_p": _mcnemar(b, c),
+        "ref_only": b, "arm_only": c,
+        "flips": b + c, "flip_rate": (b + c) / n,
+    }
+
+
+def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, spans=None, chunk=512):
+    """Per scored position: KL(ref||arm), top-1 agreement, NLL of both, group keys.
+
+    Row: (lang, period, second half, KL, NLL ref, NLL arm, same top, target in
+    an assistant span).
+    """
     import mlx.core as mx
 
     rows = []
     off = 0
     with mx.stream(mx.cpu):
-        for s, m in zip(seqs, meta):
+        for j, (s, m) in enumerate(zip(seqs, meta)):
+            inside = set()
+            for a, b in (spans[j] if spans else []):
+                inside.update(range(a, b))
             L = len(s)
             targets = mx.array(s[1:])
             for a in range(0, L - 1, chunk):
@@ -523,7 +867,8 @@ def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, chunk=512):
                 for i, (k, r, q, g) in enumerate(
                     zip(kl.tolist(), nll_r.tolist(), nll_a.tolist(), agree.tolist())
                 ):
-                    rows.append((m["lang"], m["period"], a + i >= L // 2, k, r, q, g))
+                    rows.append((m["lang"], m.get("period"), a + i >= L // 2, k, r, q, g,
+                                 a + i + 1 in inside))
             off += L
     return rows
 
@@ -583,7 +928,7 @@ def cmd_report(args):
     if REFERENCE not in arms:
         sys.exit(f"no reference hidden states; run `forward --ckpt {REFERENCE}` first")
     sets = load_sets(data)
-    heads = {a: head_weight(ckpt_path(a)) for a in arms}
+    heads = {a: head_weight(ckpt_path(a), head_path(data, a)) for a in arms}
     result = {
         "date": time.strftime("%Y-%m-%d"),
         "versions": _versions(),
@@ -608,6 +953,26 @@ def cmd_report(args):
         groups["second-half"] = [r for r in rows if r[2]]
         result["text"][arm] = {g: _summ(rs) for g, rs in groups.items() if rs}
 
+    result["kld"] = {}
+    for name, st in sets.items():
+        if st["score"] != "all" or name == "text":
+            continue
+        result["kld"][name] = {}
+        for arm in arms:
+            if arm == REFERENCE or not hidden_path(data, arm, name).exists():
+                continue
+            h_ref = mx.load(str(hidden_path(data, REFERENCE, name)))["h"]
+            h_arm = mx.load(str(hidden_path(data, arm, name)))["h"]
+            rows = text_scores(h_ref, h_arm, heads[REFERENCE], heads[arm], st["seqs"],
+                               st["meta"], st.get("spans"))
+            groups = {"all": rows}
+            for lang in sorted({m["lang"] for m in st["meta"]}):
+                groups[lang] = [r for r in rows if r[0] == lang]
+            groups["second-half"] = [r for r in rows if r[2]]
+            if st.get("spans"):
+                groups["assistant"] = [r for r in rows if r[7]]
+            result["kld"][name][arm] = {g: _summ(rs) for g, rs in groups.items() if rs}
+
     for name, st in sets.items():
         if st["score"] != "last":
             continue
@@ -626,18 +991,21 @@ def cmd_report(args):
             k, n = sum(sc["correct"]), len(sc["correct"])
             entry = {"n": n, "acc": k / n, "ci95": _wilson(k, n), "letter_top1": sc["letter_top1"]}
             if ref is not None and arm != REFERENCE:
-                b = sum(r and not a for r, a in zip(ref["correct"], sc["correct"]))
-                c = sum(a and not r for r, a in zip(ref["correct"], sc["correct"]))
-                entry.update(
-                    same_answer=sum(x == y for x, y in zip(ref["preds"], sc["preds"])) / n,
-                    delta_acc=(k - sum(ref["correct"])) / n,
-                    mcnemar_p=_mcnemar(b, c),
-                    ref_only=b, arm_only=c,
-                    # Flips (Dutta et al. 2024): right <-> wrong against the
-                    # reference. same_answer also counts wrong -> other wrong.
-                    flips=b + c, flip_rate=(b + c) / n,
-                )
+                entry.update(_paired(list(zip(ref["correct"], ref["preds"])),
+                                     list(zip(sc["correct"], sc["preds"]))))
             result["mc"][name][arm] = entry
+        # Subgroups stored per question, e.g. Global-MMLU-Lite's cultural label.
+        labels = sorted({m["cultural"] for m in st["meta"] if m.get("cultural")})
+        for label in labels:
+            idx = [i for i, m in enumerate(st["meta"]) if m.get("cultural") == label]
+            grp = result.setdefault("mc_groups", {}).setdefault(f"{name}/{label}", {})
+            for arm, sc in per_arm.items():
+                k = sum(sc["correct"][i] for i in idx)
+                entry = {"n": len(idx), "acc": k / len(idx), "ci95": _wilson(k, len(idx))}
+                if ref is not None and arm != REFERENCE:
+                    entry.update(_paired([(ref["correct"][i], ref["preds"][i]) for i in idx],
+                                         [(sc["correct"][i], sc["preds"][i]) for i in idx]))
+                grp[arm] = entry
 
     out = data / "results" / f"quality-{result['date']}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -669,20 +1037,37 @@ def _print_report(r):
             print(f"| {arm} | {g} | {s['n']:,} | {s['kl_mean']:.4f} | {s['kl_median']:.4f} | "
                   f"{s['kl_p90']:.3f} | {s['kl_p99']:.3f} | {s['kl_p999']:.3f} | {s['kl_max']:.2f} | "
                   f"{s['top1_agree']:.1%} | {s['ppl_ref']:.3f} | {s['ppl_arm']:.3f} |")
+    for name, arms in r.get("kld", {}).items():
+        print(f"\n## KL divergence vs {REFERENCE} ({name})\n")
+        print("| arm | group | tokens | mean KL | median | p90 | p99 | p99.9 | max | same top | "
+              "PPL ref | PPL arm |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+        for arm, groups in arms.items():
+            for g, s in groups.items():
+                print(f"| {arm} | {g} | {s['n']:,} | {s['kl_mean']:.4f} | {s['kl_median']:.4f} | "
+                      f"{s['kl_p90']:.3f} | {s['kl_p99']:.3f} | {s['kl_p999']:.3f} | "
+                      f"{s['kl_max']:.2f} | {s['top1_agree']:.1%} | {s['ppl_ref']:.3f} | "
+                      f"{s['ppl_arm']:.3f} |")
     print("\n## Multiple choice (reasoning_effort=none, letter logits)\n")
-    print(f"| set | arm | n | accuracy | 95% CI | Δ vs {REFERENCE} | flips (−/+) | same answer | "
-          "McNemar p | letter top-1 |")
-    print("|---|---|---|---|---|---|---|---|---|---|")
-    for name, arms in r["mc"].items():
+    print(f"Δ vs {REFERENCE} with the paired 95% interval (Newcombe); equivalent = TOST, "
+          f"90% interval inside ±{EQUIV_MARGIN:.0%}.\n")
+    print("| set | arm | n | accuracy | Δ | Δ 95% CI | equivalent | right→wrong | wrong→right | "
+          "McNemar p | same answer | letter top-1 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    groups = list(r["mc"].items()) + list(r.get("mc_groups", {}).items())
+    for name, arms in groups:
         for arm, e in arms.items():
-            lo, hi = e["ci95"]
-            delta = f"{e['delta_acc']:+.1%}" if "delta_acc" in e else ""
-            same = f"{e['same_answer']:.1%}" if "same_answer" in e else ""
-            p = f"{e['mcnemar_p']:.3f}" if "mcnemar_p" in e else ""
-            flips = (f"{e['flip_rate']:.1%} ({e['ref_only']}/{e['arm_only']})"
-                     if "flips" in e else "")
-            print(f"| {name} | {arm} | {e['n']} | {e['acc']:.1%} | {lo:.1%}–{hi:.1%} | {delta} | "
-                  f"{flips} | {same} | {p} | {e['letter_top1']:.1%} |")
+            if "delta_acc" not in e:
+                print(f"| {name} | {arm} | {e['n']} | {e['acc']:.1%} | | | | | | | | "
+                      f"{e['letter_top1']:.1%} |" if "letter_top1" in e else
+                      f"| {name} | {arm} | {e['n']} | {e['acc']:.1%} | | | | | | | | |")
+                continue
+            lo, hi = e["delta_ci95"]
+            top1 = f"{e['letter_top1']:.1%}" if "letter_top1" in e else ""
+            print(f"| {name} | {arm} | {e['n']} | {e['acc']:.1%} | {e['delta_acc']:+.1%} | "
+                  f"{lo:+.1%} to {hi:+.1%} | {'yes' if e['equivalent'] else 'no'} | "
+                  f"{e['ref_only']} | {e['arm_only']} | {e['mcnemar_p']:.3f} | "
+                  f"{e['same_answer']:.1%} | {top1} |")
 
 
 def main(profile=None, doc=__doc__):
@@ -691,13 +1076,16 @@ def main(profile=None, doc=__doc__):
         ap.add_argument("--model", required=True, choices=sorted(PROFILES))
     ap.add_argument("--data", type=Path, help="data directory (default: the profile's)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("prepare")
+    p = sub.add_parser("prepare")
+    p.add_argument("--sets", help="core,calib-v5,flores-eu,chat,tools (default: all not yet built)")
     p = sub.add_parser("check")
     p.add_argument("--ckpt", help="default: the profile's tokenizer build")
     p = sub.add_parser("forward")
     p.add_argument("--ckpt", required=True)
     p.add_argument("--arm", help="name of the arm (default: --ckpt)")
     p.add_argument("--sets", help="comma-separated subset of sets")
+    p.add_argument("--chunk", type=int,
+                   help="prefill in pieces of this many tokens (noise-floor arm, e.g. 512)")
     sub.add_parser("report")
     args = ap.parse_args()
     use_profile(profile or args.model)

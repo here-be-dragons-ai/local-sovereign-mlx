@@ -1,46 +1,81 @@
 # Kolibri-1-MLX-3bit: quality loss and time to first token
 
-Measurements for issue #8, 2026-10-08, Apple M5 Pro, 48 GB,
-`iogpu.wired_limit_mb=40960`, mlx 0.32.2, mlx-vlm 0.7.4 (repo commit `4f68407`
-plus the two measurement scripts).
+Measurements 2026-10-08/09, Apple M5 Pro, 48 GB,
+`iogpu.wired_limit_mb=40960`, mlx 0.32.2, mlx-vlm 0.7.4. Method, sets and
+statistics: [`docs/quality-method.md`](../quality-method.md).
 
 | file | content |
 |---|---|
-| `quality-2026-10-08.json` | KL / perplexity per arm and group, multiple-choice accuracy and flips, text sources (report re-run 2026-10-09 with p90 / p99.9 / max and flips; earlier values unchanged) |
-| `per-question-2026-10-08.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
+| `quality-2026-10-09.json` | per set, arm and group: KL distribution and perplexity; multiple choice with paired intervals, equivalence and flips; data sources and hashes; versions |
+| `per-question-2026-10-09.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
 | `ttft-2026-10-08.jsonl` | one line per TTFT request, with server flags and versions |
 | `ttft-reserve-2026-10-08.jsonl` | the same with `APC_MEMORY_RESERVE_GB=1.5`, one run up to 64k |
 
-## Quality
+## Arms
 
-**Method.** Three arms go through the same layer-streamed forward pass
-(`measure-kolibri-quality.py`): the FP8 release (`Aleph-Alpha/Kolibri-1`) as
-the reference, the shipped 3/6-bit build, and a uniform 3-bit control
-(`convert-kolibri.py --other-bits 3`). The streamed pass is bit-identical to
-the ordinary in-memory forward on the 3-bit checkpoint (`check`: max |Δh| = 0).
-Logits are computed in fp32 on the CPU from the final hidden state and each
-arm's own LM head.
+- **FP8**: the release (`Aleph-Alpha/Kolibri-1`, block-FP8, dequantized to
+  bf16 layer by layer), the reference
+- **noise floor**: FP8 again, prefilled in 512-token pieces against a KV cache
+  instead of in one pass; same weights, different order of operations
+- **3/6-bit (shipped)**: 3.61 bits per weight
+- **uniform 3-bit**: control, `convert-kolibri.py --other-bits 3`, 3.51 bits
+  per weight
 
-**KL divergence and perplexity.** 75,900 scored tokens of Wikipedia prose at
-pinned revisions (`sources` in the JSON), German and English, 4096-token
-windows. "post" articles were created after Kolibri's knowledge cutoff
-(2026-06-18).
+## The noise floor is high for this model
 
-| arm | bits/weight | mean KL | median | p90 | p99 | p99.9 | max | same top | PPL (FP8: 16.98) |
+Run against itself through a different number of tokens per call, the FP8
+release already differs noticeably from itself: mean KL 0.036 and p99.9 5.7
+on Wikipedia, 95% same top token. For comparison, the same test on dense
+Apertus 1.5 8B gives 0.0007 and 0.024. It is rounding, not a different
+computation: after the first decoder layer the hidden states differ by about
+1e-4 (bf16 rounding of a matmul over 512 instead of 2,000 rows), and a single
+chunk of 2,048 tokens through the cache path is bit-identical to the
+one-pass forward. Over 50 layers of top-6-of-384 expert routing these
+differences tip expert choices and grow. The 3-bit build shows the same
+effect on its own (KL 0.039 between the two paths). In practice two servers
+with different prefill step sizes already produce somewhat different
+Kolibri outputs. No multiple-choice answer changes from this noise (0 flips
+on all sets).
+
+## Distribution against FP8
+
+KL divergence per token (mean / p99.9) and how often the most likely next
+token is the same:
+
+| set | noise floor | 3/6-bit (shipped) | uniform 3-bit |
+|---|---|---|---|
+| Wikipedia de/en | 0.0363 / 5.695 / 95.0% | 0.1140 / 10.344 / 88.9% | 0.3764 / 13.066 / 76.5% |
+| Calibration v5 | 0.0938 / 8.570 / 91.8% | 0.2081 / 11.012 / 85.3% | 0.5253 / 12.811 / 73.1% |
+| chat (oasst2) | 0.0106 / 1.315 / 97.0% | 0.3983 / 9.714 / 72.6% | 0.5273 / 10.498 / 68.9% |
+| tool calling | 0.0421 / 6.760 / 97.4% | 0.1120 / 10.112 / 94.0% | 0.3101 / 13.479 / 88.0% |
+| FLORES, 23 EU languages | 0.0605 / 4.495 / 89.9% | 0.1671 / 6.448 / 81.0% | 0.5145 / 8.320 / 65.8% |
+| chat (oasst2), assistant turns | 0.0090 / 1.172 / 97.2% | 0.3569 / 9.642 / 73.3% | 0.4727 / 10.228 / 69.8% |
+| tool calling, assistant turns | 0.0007 / 0.044 / 99.6% | 0.0047 / 0.253 / 98.6% | 0.0285 / 1.596 / 96.8% |
+
+Against that floor the shipped build sits at 2 to 3 times the noise on
+Wikipedia, Calibration v5, tool calling and the EU languages. **On chat it
+does not**: mean KL 0.40 against a floor of 0.011, 73% same top token
+against 97%, perplexity 11.6 → 13.5; the assistant turns alone look the
+same. The heavy tail on Wikipedia (p99.9 10.3) is about half noise (5.7).
+Uniform 3-bit is worse on every set.
+
+Noise floor and shipped build, full distribution:
+
+| set | tokens | mean | median | p90 | p99 | p99.9 | max | same top | PPL ref → arm |
 |---|---|---|---|---|---|---|---|---|---|
-| 3/6-bit (shipped) | 3.61 | 0.114 | 0.021 | 0.133 | 2.07 | 10.3 | 19.8 | 88.9% | 17.11 |
-| uniform 3-bit | 3.51 | 0.376 | 0.138 | 0.694 | 5.42 | 13.1 | 23.5 | 76.5% | 19.38 |
+| Wikipedia de/en | 75,900 | 0.0363 | 0.0030 | 0.027 | 0.523 | 5.695 | 19.31 | 95.0% | 16.98 → 17.00 |
+| Calibration v5 | 119,611 | 0.0938 | 0.0070 | 0.081 | 2.156 | 8.570 | 19.29 | 91.8% | 16.02 → 16.03 |
+| chat (oasst2) | 64,821 | 0.0106 | 0.0008 | 0.009 | 0.110 | 1.315 | 15.45 | 97.0% | 11.61 → 11.61 |
+| tool calling | 59,259 | 0.0421 | 0.0000 | 0.011 | 0.831 | 6.760 | 19.02 | 97.4% | 4.46 → 4.45 |
+| FLORES, 23 EU languages | 90,846 | 0.0605 | 0.0156 | 0.092 | 0.853 | 4.495 | 14.21 | 89.9% | 24.68 → 24.82 |
 
-The columns follow `llama-perplexity --kl-divergence`, the numbers Unsloth
-reports for its GGUFs (percentiles by nearest rank; "same top" is top-1
-agreement). The tail is heavy: one token in a thousand has a KL above 10
-nats in the shipped build: there its next-token distribution differs
-drastically from FP8's. The mean hides this. For scale, Unsloth's 4-bit GGUFs
-of Qwen3.5 / Qwen3.8 report p99.9 between about 0.4 and 0.8, at ~4.5 bits per
-weight and on their own text.
-
-By language, the shipped build: German mean KL 0.106, English 0.121; before /
-after the cutoff 0.110 / 0.101 (de) and 0.092 / 0.155 (en).
+| set | tokens | mean | median | p90 | p99 | p99.9 | max | same top | PPL ref → arm |
+|---|---|---|---|---|---|---|---|---|---|
+| Wikipedia de/en | 75,900 | 0.1140 | 0.0211 | 0.133 | 2.074 | 10.344 | 19.78 | 88.9% | 16.98 → 17.11 |
+| Calibration v5 | 119,611 | 0.2081 | 0.0320 | 0.286 | 4.322 | 11.012 | 19.81 | 85.3% | 16.02 → 16.39 |
+| chat (oasst2) | 64,821 | 0.3983 | 0.1659 | 0.922 | 4.029 | 9.714 | 14.92 | 72.6% | 11.61 → 13.45 |
+| tool calling | 59,259 | 0.1120 | 0.0013 | 0.085 | 2.766 | 10.112 | 24.08 | 94.0% | 4.46 → 4.36 |
+| FLORES, 23 EU languages | 90,846 | 0.1671 | 0.0701 | 0.327 | 1.874 | 6.448 | 15.29 | 81.0% | 24.68 → 26.35 |
 
 Cross-runtime: `llama-perplexity -c 4096` on the same text gives **17.75 ±
 0.30** for the Q3_K_S GGUF (`Eliasfpv28/Kolibri-1-Q3_K_S-GGUF`, 31.5 GiB). In the same convention -- second half of each window scored -- the
@@ -49,32 +84,65 @@ The windows are not cut identically (llama.cpp splits across article
 boundaries), so the numbers are comparable, not equal. No KL for the GGUF: that
 needs llama.cpp's logit file format for the reference.
 
-**Multiple choice.** Kolibri's chat template with `reasoning_effort=none`,
-options A-D in the user turn, scored by the letter logits at the first answer
-position. Δ and McNemar (exact, two-sided) are paired against FP8.
+### Per EU language
 
-| set | FP8 | 3/6-bit (shipped) | Δ | flips | p | uniform 3-bit | Δ | flips | p |
+FLORES passages, mean KL / same top. Irish is not in Belebele.
+
+| language | noise floor | 3/6-bit (shipped) | uniform 3-bit |
+|---|---|---|---|
+| bul_Cyrl | 0.0806 / 88.8% | 0.2102 / 80.2% | 0.4795 / 66.9% |
+| ces_Latn | 0.0507 / 91.3% | 0.1458 / 83.0% | 0.4789 / 67.3% |
+| dan_Latn | 0.0714 / 87.4% | 0.2004 / 78.5% | 0.6503 / 60.4% |
+| deu_Latn | 0.0460 / 92.6% | 0.1049 / 86.5% | 0.3810 / 71.5% |
+| ell_Grek | 0.0581 / 89.8% | 0.1235 / 83.6% | 0.3267 / 72.5% |
+| eng_Latn | 0.0725 / 91.5% | 0.1702 / 85.0% | 0.4737 / 71.5% |
+| est_Latn | 0.0855 / 83.5% | 0.2476 / 70.8% | 0.7159 / 53.8% |
+| fin_Latn | 0.0431 / 88.9% | 0.1605 / 77.9% | 0.5770 / 59.1% |
+| fra_Latn | 0.1145 / 90.2% | 0.1880 / 83.9% | 0.5357 / 70.9% |
+| hrv_Latn | 0.0439 / 89.9% | 0.1371 / 81.1% | 0.5027 / 62.8% |
+| hun_Latn | 0.0409 / 91.2% | 0.1601 / 80.1% | 0.5644 / 62.5% |
+| ita_Latn | 0.0717 / 90.4% | 0.1759 / 83.2% | 0.4963 / 71.0% |
+| lit_Latn | 0.0370 / 90.0% | 0.1628 / 76.6% | 0.5134 / 61.0% |
+| lvs_Latn | 0.0512 / 90.2% | 0.1628 / 78.3% | 0.5494 / 60.6% |
+| mlt_Latn | 0.0337 / 90.3% | 0.1803 / 78.3% | 0.6158 / 60.7% |
+| nld_Latn | 0.0630 / 93.2% | 0.1525 / 86.7% | 0.5223 / 71.1% |
+| pol_Latn | 0.0582 / 90.9% | 0.1488 / 84.1% | 0.3948 / 72.3% |
+| por_Latn | 0.0635 / 91.5% | 0.1390 / 85.9% | 0.4340 / 72.6% |
+| ron_Latn | 0.0718 / 89.8% | 0.2140 / 79.8% | 0.6619 / 61.8% |
+| slk_Latn | 0.0525 / 89.5% | 0.1632 / 79.5% | 0.4746 / 67.2% |
+| slv_Latn | 0.0496 / 89.1% | 0.1580 / 79.7% | 0.5450 / 61.3% |
+| spa_Latn | 0.0920 / 90.0% | 0.1874 / 83.6% | 0.5362 / 71.2% |
+| swe_Latn | 0.0613 / 88.5% | 0.1706 / 79.7% | 0.5492 / 64.5% |
+
+## Multiple choice
+
+Zero-shot through the chat template with `reasoning_effort=none`, scored by
+the letter logits. Δ in percentage points against FP8 with a paired 95%
+interval (Newcombe); "equiv." is a TOST with a margin of ±1 point fixed in
+advance; flips are right → wrong / wrong → right.
+
+| set | fp8 | 3/6-bit (shipped) | Δ (95% CI) | equiv. | flips −/+ | uniform 3-bit | Δ (95% CI) | equiv. | flips −/+ |
 |---|---|---|---|---|---|---|---|---|---|
-| Belebele de (900) | 92.9% | 93.1% | +0.2 pp | 1.8% (7/9) | 0.80 | 92.0% | −0.9 pp | 3.8% (21/13) | 0.23 |
-| Belebele en (900) | 95.2% | 94.8% | −0.4 pp | 1.8% (10/6) | 0.45 | 93.6% | −1.7 pp | 3.0% (21/6) | 0.006 |
-| Global-MMLU-Lite de (400) | 72.5% | 71.2% | −1.2 pp | 3.8% (10/5) | 0.30 | 68.5% | −4.0 pp | 9.0% (26/10) | 0.011 |
-| Global-MMLU-Lite en (400) | 73.8% | 72.0% | −1.8 pp | 4.2% (12/5) | 0.14 | 72.0% | −1.8 pp | 5.8% (15/8) | 0.21 |
+| Belebele de (900) | 92.9% | 93.1% | +0.2 (−0.7 to +1.2) | no | 7/9 | 92.0% | −0.9 (−2.2 to +0.4) | no | 21/13 |
+| Belebele en (900) | 95.2% | 94.8% | −0.4 (−1.4 to +0.5) | no | 10/6 | 93.6% | −1.7 (−2.9 to −0.5) | no | 21/6 |
+| Global-MMLU-Lite de (400) | 72.5% | 71.2% | −1.2 (−3.2 to +0.7) | no | 10/5 | 68.5% | −4.0 (−7.0 to −1.0) | no | 26/10 |
+| Global-MMLU-Lite en (400) | 73.8% | 72.0% | −1.8 (−3.9 to +0.3) | no | 12/5 | 72.0% | −1.8 (−4.2 to +0.7) | no | 15/8 |
+| … de, culturally sensitive (200) | 67.5% | 64.5% | −3.0 (−6.3 to +0.2) | no | 8/2 | 63.0% | −4.5 (−8.8 to −0.2) | no | 14/5 |
+| … de, culturally agnostic (200) | 77.5% | 78.0% | +0.5 (−2.1 to +3.1) | no | 2/3 | 74.0% | −3.5 (−7.7 to +0.7) | no | 12/5 |
+| … en, culturally sensitive (200) | 68.5% | 66.5% | −2.0 (−5.6 to +1.5) | no | 8/4 | 65.5% | −3.0 (−6.8 to +0.8) | no | 10/4 |
+| … en, culturally agnostic (200) | 79.0% | 77.5% | −1.5 (−4.1 to +1.0) | no | 4/1 | 78.5% | −0.5 (−3.8 to +2.7) | no | 5/4 |
 
-Flips ("Accuracy is Not All You Need", Dutta et al. 2024): questions that turn
-from right to wrong or from wrong to right against FP8, in brackets the two
-directions (right → wrong / wrong → right). On Global-MMLU-Lite en both builds
-lose the same 1.8 points, but uniform 3-bit gets there with more flips.
+No set shows equivalence within ±1 point for either build: the intervals are
+wider than the margin (Kolibri flips more answers than Apertus 8-bit, so the
+paired intervals are wider too). For the shipped build no difference is
+detectable on any set; its flips lean slightly towards losses on
+Global-MMLU-Lite (10/5, 12/5), most on the culturally sensitive German
+questions (8/2, −3.0 points, interval −6.3 to +0.2). Uniform 3-bit loses
+significantly on Belebele en and Global-MMLU-Lite de.
 
-95% Wilson intervals are in the JSON (about ±1.5 pp for Belebele, ±4.5 pp for
-Global-MMLU-Lite). The shipped build gives the same answer as FP8 on 95-98% of
-the questions. None of its differences is significant at these sizes; a loss of
-1-2 points on Global-MMLU-Lite cannot be ruled out either. Uniform 3-bit loses
-significantly on two of the four sets: the 6-bit attention, shared expert,
-embedding and head are worth their 0.1 bits per weight.
-
-These are likelihood scores without reasoning. They measure what the
-quantization changes, not what Kolibri scores with thinking enabled; compare
-them with each other, not with the original model card.
+These are likelihood scores without reasoning: they show what the
+quantization changes and are not comparable with the scores on the original
+model card.
 
 ## Time to first token
 
@@ -122,13 +190,19 @@ Two limits of the prefix cache, both measured:
 MEM_PROBE_INTERVAL=0.5 caffeinate -dimsu ./start-mlx_kolibri.sh
 ./measure-kolibri-ttft.py
 
-# Quality: server stopped; FP8 release in ~/src/mlx/models/Kolibri-1-FP8
+# Quality: no server running, one run at a time; FP8 release in ~/src/mlx/models/Kolibri-1-FP8
 ./measure-kolibri-quality.py prepare
 ./measure-kolibri-quality.py check --ckpt 3bit
 ./convert-kolibri.py ~/src/mlx/models/Kolibri-1-FP8 ~/src/mlx/models/Kolibri-1-MLX-3bit-uniform --other-bits 3
 for c in fp8 3bit 3bit-uniform; do ./measure-kolibri-quality.py forward --ckpt $c; done
+./measure-kolibri-quality.py forward --ckpt fp8 --arm fp8-chunked --chunk 512
 ./measure-kolibri-quality.py report
+./quality-tables.py ~/src/mlx/kolibri-quality/results/quality-<date>.json --ref fp8 \
+    --arms fp8-chunked,3bit,3bit-uniform --names "noise floor,3/6-bit (shipped),uniform 3-bit" \
+    --mc-arms 3bit,3bit-uniform
 ```
 
-Run time on the M5 Pro: FP8 reference 24 min for all sets (556k tokens, peak
-7.4 GiB), each quantized arm ~17 min, report ~2 min.
+`forward` keeps each arm's LM head next to its hidden states, so `report`
+no longer needs the checkpoints (the uniform 3-bit control can be deleted
+after its forward pass). Run time on the M5 Pro: forward ~30 min per arm for
+all sets, the noise-floor arm ~1.5 h; report ~1 h (CPU).
