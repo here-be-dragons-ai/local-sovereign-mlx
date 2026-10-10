@@ -89,6 +89,29 @@ and SHA-256 hashes are in `sources` per set in the result JSON.
 These are likelihood scores without reasoning: they show what the
 quantization changes and are not comparable with published benchmark scores.
 
+## MMLU 5-shot
+
+`measure-mmlu.py`: all 14,042 MMLU test questions in the Hendrycks format
+(prompts from `unsloth/studio_mmlu`), five solved examples of the subject in
+front, no chat template; the answer is the letter with the highest logit after
+"Answer:", taking the larger of " A" and "A". The 5-shot prefix runs once per
+subject and each question continues from a copy of its KV cache; on a
+114-question check this gives the same answers as the full prompts (largest
+letter-logit difference 0.125, bf16 rounding). Validated before use: Llama 3.1
+8B Instruct (bf16) scores 68.3%, Unsloth reports 68.2% for a correct
+implementation. Efficiency is (MMLU − 25) / GB of weights on disk, as Unsloth
+defines it. The models run fully in memory, so Kolibri's FP8 reference is not
+covered.
+
+## Divergence @32
+
+`measure-divergence.py`: 300 prompts from public sources along Unsloth's
+categories (Terminal-Bench 2.1, SWE-bench Verified, AIME/HMMT 2025, Belebele
+passages in five non-Latin scripts, Wikipedia windows), 32 tokens decoded
+greedily through the chat template by the reference and each build; reported
+are the share of prompts with all 32 tokens identical and the mean position of
+the first difference. Runs in memory, like MMLU; no noise floor yet.
+
 ## Not covered yet
 
 Long generation (reasoning chains, long context, instruction following,

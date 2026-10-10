@@ -1,0 +1,72 @@
+{
+ "date": "2026-10-10",
+ "prompts_sha256": "5b2a8fc0c473546a0e33d73119c6d52d220bb95f0845c9a09863fe9cc7e89966",
+ "reference": "apertus-bf16",
+ "steps": 32,
+ "arms": {
+  "apertus-4bit": {
+   "all": {
+    "n": 300,
+    "identical": 0.06666666666666667,
+    "mean_first_divergence": 6.456666666666667
+   },
+   "longdoc": {
+    "n": 60,
+    "identical": 0.0,
+    "mean_first_divergence": 2.1
+   },
+   "math": {
+    "n": 60,
+    "identical": 0.25,
+    "mean_first_divergence": 16.733333333333334
+   },
+   "nonlatin": {
+    "n": 60,
+    "identical": 0.05,
+    "mean_first_divergence": 7.916666666666667
+   },
+   "swe": {
+    "n": 60,
+    "identical": 0.0,
+    "mean_first_divergence": 1.4166666666666667
+   },
+   "terminal": {
+    "n": 60,
+    "identical": 0.03333333333333333,
+    "mean_first_divergence": 4.116666666666666
+   }
+  },
+  "apertus-8bit": {
+   "all": {
+    "n": 300,
+    "identical": 0.6433333333333333,
+    "mean_first_divergence": 25.03
+   },
+   "longdoc": {
+    "n": 60,
+    "identical": 0.5166666666666667,
+    "mean_first_divergence": 22.5
+   },
+   "math": {
+    "n": 60,
+    "identical": 0.8833333333333333,
+    "mean_first_divergence": 30.45
+   },
+   "nonlatin": {
+    "n": 60,
+    "identical": 0.6,
+    "mean_first_divergence": 23.45
+   },
+   "swe": {
+    "n": 60,
+    "identical": 0.5333333333333333,
+    "mean_first_divergence": 22.45
+   },
+   "terminal": {
+    "n": 60,
+    "identical": 0.6833333333333333,
+    "mean_first_divergence": 26.3
+   }
+  }
+ }
+}

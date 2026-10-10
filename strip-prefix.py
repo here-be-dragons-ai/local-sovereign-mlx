@@ -36,6 +36,13 @@ def main():
             idx = json.loads(f.read_text())
             idx["weight_map"] = {k.removeprefix(PREFIX): v for k, v in idx["weight_map"].items()}
             (dst / f.name).write_text(json.dumps(idx, indent=2))
+        elif f.name == "config.json":
+            # Per-layer quantization entries carry the module path as key.
+            cfg = json.loads(f.read_text())
+            for key in ("quantization", "quantization_config"):
+                if isinstance(cfg.get(key), dict):
+                    cfg[key] = {k.removeprefix(PREFIX): v for k, v in cfg[key].items()}
+            (dst / f.name).write_text(json.dumps(cfg, indent=2))
         elif f.is_file() and dst != src:
             shutil.copy2(f, dst / f.name)
     print(f"done: {dst}")

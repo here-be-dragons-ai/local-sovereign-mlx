@@ -164,6 +164,56 @@ about one point between the orders.
 These are likelihood scores without reasoning: they show what the
 quantization changes and are not comparable with published benchmark scores.
 
+## MMLU 5-shot
+
+All 14,042 MMLU test questions in the original Hendrycks format, five solved
+examples of the same subject in front, no chat template, scored by the letter
+logits after "Answer:" (the larger of " A" and "A" per letter). The prompts are
+`unsloth/studio_mmlu`; the 5-shot prefix runs once per subject and every
+question continues from a copy of its cache (`measure-mmlu.py`; identical
+answers to the full prompts on a 114-question check). **Harness check:**
+Llama 3.1 8B Instruct in bf16 scores 68.3% here, against 68.2% that Unsloth
+gives for a correct implementation.
+
+| arm | MMLU 5-shot | Δ vs bf16 (95% CI) | equivalent ±1 pp | flips −/+ | (MMLU − 25) / GB |
+|---|---|---|---|---|---|
+| bf16 (18.4 GB) | 66.9% | | | | 2.28 |
+| **8-bit, shipped (10.1 GB)** | 66.9% | −0.1 (−0.3 to +0.1) | **yes** | 125/115 | 4.16 |
+| 4-bit RTN (5.8 GB) | 62.8% | −4.2 (−4.8 to −3.5) | no | 1,356/773 | 6.56 |
+
+With 14,042 questions the paired interval is tight enough to show
+equivalence: the 8-bit build scores like bf16, also per category (STEM,
+humanities, social sciences, other: all within 0.4 points). The 4-bit control
+gains the most per gigabyte but loses 4.2 points, most in social sciences (−5.1) and STEM (−4.7).
+Sizes are the safetensors files on disk (the omni builds include the float32
+image and audio tokenizers). Summary: `mmlu5-2026-10-10.json`.
+
+## Divergence @32
+
+Does the build follow bf16 over several tokens, not just one? 300 prompts, 60
+each from Terminal-Bench 2.1 tasks, SWE-bench Verified issues, AIME and HMMT
+2025 problems, Belebele passages in Chinese, Arabic, Hindi, Russian and
+Japanese, and 1,200-word Wikipedia windows; 32 tokens decoded greedily through
+the chat template (`measure-divergence.py`, prompt set hashed in the result).
+Unsloth's Divergence-300 prompts are not public, so the numbers follow its
+method but not its prompts.
+
+| prompts | 8-bit: all 32 tokens identical | mean first divergence | 4-bit RTN: identical | mean first divergence |
+|---|---|---|---|---|
+| all (300) | **64.3%** | 25.0 | 6.7% | 6.5 |
+| math | 88.3% | 30.4 | 25.0% | 16.7 |
+| terminal tasks | 68.3% | 26.3 | 3.3% | 4.1 |
+| non-Latin scripts | 60.0% | 23.4 | 5.0% | 7.9 |
+| SWE issues | 53.3% | 22.4 | 0.0% | 1.4 |
+| long documents | 51.7% | 22.5 | 0.0% | 2.1 |
+
+With the 8-bit build two thirds of the continuations are token for token the
+ones of bf16, and where they part, it is on average after about 23 tokens. The
+4-bit control leaves the bf16 path almost at once on code issues and long
+documents. There is no noise floor for this test yet: greedy decoding can also
+part ways through rounding alone, so the 8-bit figure is a lower bound for how
+closely it follows. Summary: `divergence-2026-10-10.json`.
+
 ## Time to first token
 
 Pending. The first run (2026-10-08/09) was disturbed: the machine fell to 1%
