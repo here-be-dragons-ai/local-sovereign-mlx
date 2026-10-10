@@ -8,6 +8,7 @@ statistics: [`docs/quality-method.md`](../quality-method.md).
 |---|---|
 | `quality-2026-10-09.json` | per set, arm and group: KL distribution and perplexity; multiple choice with paired intervals, equivalence and flips; data sources and hashes; versions |
 | `per-question-2026-10-09.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
+| `quality-baselines-2026-10-10.json`, `per-question-baselines-2026-10-10.jsonl` | the same with the community builds and GGUFs of the baseline comparison (2026-10-10) |
 
 ## Arms
 
@@ -213,6 +214,44 @@ ones of bf16, and where they part, it is on average after about 23 tokens. The
 documents. There is no noise floor for this test yet: greedy decoding can also
 part ways through rounding alone, so the 8-bit figure is a lower bound for how
 closely it follows. Summary: `divergence-2026-10-10.json`.
+
+## Baselines: what people actually use
+
+Community builds from the Hub, measured 2026-10-10 against the same bf16
+reference on the same sets (sovereign-models#18). MLX builds go through the
+layer-streamed forward; GGUFs run in llama.cpp, which hands over its full
+logits (`gguf-logits.cpp`, `measure-quality.py gguf`). The community builds
+are text-only (131,072 tokens); KL is taken over the common text vocabulary.
+Sizes are the weight files on disk; ours include the float32 image and audio
+tokenizers, the others do not.
+
+Mean KL against bf16 per set, same top token on Calibration v5, and the
+multiple-choice difference in points (≡: equivalent within ±1 point, TOST):
+
+| build | GB | Wikipedia | Calibration v5 | chat | tools | FLORES EU | same top | Belebele de / en | Global-MMLU-Lite de / en |
+|---|---|---|---|---|---|---|---|---|---|
+| m1rkocasu mxfp4 | 4.3 | 0.091 | 0.052 | 0.071 | 0.076 | 0.079 | 89.6% | −2.3 / −1.0 | −1.0 / +0.8 |
+| m1rkocasu 4-bit DWQ | 4.5 | 0.139 | 0.136 | 0.134 | 0.151 | 0.134 | 83.7% | −7.1 / −3.4 | −4.2 / −3.0 |
+| tokimoa 4-bit | 4.5 | 0.202 | 0.192 | 0.197 | 0.207 | 0.194 | 80.7% | −8.9 / −4.1 | −5.5 / −4.5 |
+| GGUF Q4_K_M (Colby) | 5.1 | 0.089 | 0.089 | 0.087 | 0.089 | 0.083 | 86.9% | −1.1 / −1.2 | +1.0 / +0.8 |
+| m1rkocasu 5-bit | 5.5 | 0.045 | 0.044 | 0.042 | 0.049 | 0.043 | 90.3% | +0.7 / −0.3 | +1.5 / +1.5 |
+| 4-bit RTN (our control) | 5.8 | 0.202 | 0.192 | 0.197 | 0.207 | 0.194 | 80.7% | −8.9 / −4.1 | −5.5 / −4.5 |
+| m1rkocasu 6-bit | 6.5 | 0.012 | 0.013 | 0.011 | 0.010 | 0.012 | 94.7% | +0.1 ≡ / −0.2 ≡ | −1.0 / +1.0 |
+| GGUF Q8_0 (andreasmartin) | 8.6 | 0.0014 | 0.0016 | 0.0013 | 0.0012 | 0.0016 | 98.1% | −0.1 ≡ / +0.1 ≡ | +0.5 / +0.5 |
+| **8-bit (shipped)** | 10.1 | 0.0024 | 0.0026 | 0.0023 | 0.0022 | 0.0025 | 97.6% | +0.3 ≡ / 0.0 ≡ | −0.2 / 0.0 ≡ |
+| noise floor | – | 0.0007 | 0.0008 | 0.0007 | 0.0003 | 0.0008 | 98.7% | | |
+
+References: Belebele de 82.6% / en 89.3%, Global-MMLU-Lite de 62.0% / en 68.0% (bf16).
+
+- tokimoa's 4-bit gives the same numbers as our 4-bit RTN control: both are
+  mlx's default round-to-nearest with group size 64. The control is what
+  people get from a plain `mlx_lm.convert -q`.
+- At 4–5 GB, mxfp4 and Q4_K_M halve the KL of RTN and lose 1–2 points in
+  multiple choice instead of 4–9. DWQ (distilled scales) improves on RTN by a
+  third but stays behind mxfp4, which is also smaller.
+- At 8 bit, llama.cpp's Q8_0 is about 40% closer to bf16 than our affine
+  8-bit; it scales blocks of 32 weights instead of groups of 64. Both are
+  within a few times the noise floor and equivalent in multiple choice.
 
 ## Time to first token
 
