@@ -1145,6 +1145,32 @@ def _mc(data, arm, name, letter_ids, meta, heads):
     return mc_scores(mx.load(str(hidden_path(data, arm, name)))["h"], heads[arm], letter_ids, meta)
 
 
+def cmd_compact(args):
+    """Replace an arm's hidden states by its scored rows and answers (a few MB instead of ~6 GB).
+
+    The report reads them like a GGUF arm's and gives the same numbers;
+    what is lost is the option to compute new statistics from the logits.
+    """
+    data = args.data
+    sets = load_sets(data)
+    for arm in args.arms.split(","):
+        if arm == REFERENCE:
+            sys.exit("the reference keeps its hidden states")
+        heads = {a: head_weight(ckpt_path(a), head_path(data, a)) for a in (REFERENCE, arm)}
+        for name, st in sets.items():
+            h = hidden_path(data, arm, name)
+            if not h.exists():
+                continue
+            if st["score"] == "all":
+                rows = _text_rows(data, arm, name, st, heads)
+                rows_path(data, arm, name).write_text(json.dumps(rows))
+            else:
+                sc = _mc(data, arm, name, st["letter_ids"], st["meta"], heads)
+                mc_path(data, arm, name).write_text(json.dumps(sc))
+            h.unlink()
+            log(f"{arm} / {name}: compacted")
+
+
 def cmd_report(args):
     data = args.data
     arms = [a for a in os.listdir(data / "hidden") if (data / "hidden" / a).is_dir()]
@@ -1351,6 +1377,8 @@ def main(profile=None, doc=__doc__):
     p.add_argument("--gguf", type=Path, required=True, help="the .gguf file (first shard if split)")
     p.add_argument("--arm", required=True)
     p.add_argument("--sets", help="comma-separated subset of sets")
+    p = sub.add_parser("compact")
+    p.add_argument("--arms", required=True, help="comma-separated arms")
     sub.add_parser("report")
     args = ap.parse_args()
     use_profile(profile or args.model)
@@ -1358,7 +1386,7 @@ def main(profile=None, doc=__doc__):
     if args.cmd == "check" and not args.ckpt:
         args.ckpt = TOKENIZER_ARM
     {"prepare": cmd_prepare, "check": cmd_check, "forward": cmd_forward, "gguf": cmd_gguf,
-     "report": cmd_report}[
+     "compact": cmd_compact, "report": cmd_report}[
         args.cmd
     ](args)
 
