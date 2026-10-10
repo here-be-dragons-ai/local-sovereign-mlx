@@ -8,6 +8,7 @@ statistics: [`docs/quality-method.md`](../quality-method.md).
 |---|---|
 | `quality-2026-10-09.json` | per set, arm and group: KL distribution and perplexity; multiple choice with paired intervals, equivalence and flips; data sources and hashes; versions |
 | `per-question-2026-10-09.jsonl` | per question and arm: set, id, predicted letter, answer, correct |
+| `generation-2026-10-10.json` | generation benchmarks per task, language and context length, with paired differences |
 | `quality-baselines-2026-10-10.json`, `per-question-baselines-2026-10-10.jsonl` | the same with the community builds and GGUFs of the baseline comparison (2026-10-10) |
 
 ## Arms
@@ -214,6 +215,20 @@ ones of bf16, and where they part, it is on average after about 23 tokens. The
 documents. There is no noise floor for this test yet: greedy decoding can also
 part ways through rounding alone, so the 8-bit figure is a lower bound for how
 closely it follows. Summary: `divergence-2026-10-10.json`.
+
+## Generation (MGSM, instructions, long context)
+
+`measure-generation.py` (#17), greedy, chat template, thinking off; scored by rules
+(`generation-2026-10-10.json`). Δ against bf16 with the paired 95% interval.
+
+| task | bf16 | 8-bit | Δ (95% CI) | right→wrong / wrong→right |
+|---|---|---|---|---|
+| MGSM de/en/fr/es (1,000 problems) | 80.9% | 80.9% | ±0.0 (−1.3 to +1.3) | 22 / 22 |
+| instruction following, IFEval-style, de/en (240) | 94.6% | 93.3% | −1.2 (−4.7 to +2.0) | 8 / 5 |
+| long context, RULER-style, 8k and 32k, de/en (80) | 65.0% | 65.0% | ±0.0 | 0 / 0 |
+
+The 8-bit build loses nothing measurable when it generates on its own, including at 32k
+context. The 4-bit control was not run.
 
 ## Baselines: what people actually use
 
