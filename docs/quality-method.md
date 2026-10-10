@@ -112,8 +112,44 @@ greedily through the chat template by the reference and each build; reported
 are the share of prompts with all 32 tokens identical and the mean position of
 the first difference. Runs in memory, like MMLU; no noise floor yet.
 
+## Baselines from others, including GGUF
+
+Community MLX builds go through the same layer-streamed forward as our own
+(`forward --ckpt <dir>`). Text-only Apertus 1.5 builds load through mlx-lm and
+have 131,072 tokens instead of the omni model's 266,752; KL is then taken over
+the common text vocabulary, with the reference renormalised over it (its mass
+outside is logged, and is tiny on text).
+
+GGUF builds run in llama.cpp. `gguf-logits.cpp` reads our token ids and
+returns llama.cpp's full float32 logits for every position;
+`measure-quality.py gguf` computes KL, agreement and the multiple-choice
+answers against the stored reference, exactly as for an MLX arm, and keeps
+the per-position rows so the report treats the GGUF like any other arm. This
+avoids `llama-perplexity --kl-divergence`, which compares two llama.cpp runs on
+its own chunking of a text file. Before measuring, the tool checks that
+the GGUF's vocabulary maps the same ids to the same strings.
+
+## Generation
+
+`measure-generation.py`: greedy generation through the chat template with
+thinking off, scored by rules only, outputs stored raw.
+
+- MGSM in German, English, French and Spanish (250 problems each), step by
+  step, scored on the final number.
+- Instruction following in the style of IFEval: 240 prompts in German and
+  English generated from a fixed seed, with one or two verifiable
+  instructions each (word limits, bullet count, JSON, no commas, lowercase,
+  keyword count, closing phrase, title, paragraphs, postscript,
+  placeholders); scored per prompt (all followed) and per instruction.
+- Long context in the style of RULER, on German and English Wikipedia
+  haystacks at 8k and 32k tokens: one needle, one of four keys, all three
+  values of a key, and variable tracking over four hops.
+
+Builds are compared with the reference by paired differences, as for
+multiple choice. Kolibri's FP8 reference does not fit in memory, so Kolibri
+builds are compared with each other only.
+
 ## Not covered yet
 
-Long generation (reasoning chains, long context, instruction following,
-code), baselines beyond our own controls, Irish (not in Belebele); see
-here-be-dragons-ai/sovereign-models#8.
+A judge comparison of free answers, code (Aider Polyglot is set up but needs
+stable power), Irish (not in Belebele); see here-be-dragons-ai/sovereign-models#8.

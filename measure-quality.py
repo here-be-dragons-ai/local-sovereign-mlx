@@ -13,6 +13,12 @@ each arm's own LM head.
     ./measure-quality.py --model kolibri check   --ckpt 3bit
     ./measure-quality.py --model kolibri forward --ckpt fp8 # all sets, resumable
     ./measure-quality.py --model kolibri report             # KL, PPL, accuracy
+    ./measure-quality.py --model kolibri gguf --gguf <file> --arm <name> --sets ...
+
+`gguf` measures a llama.cpp build on the same token sequences: gguf-logits
+(gguf-logits.cpp) runs the GGUF and hands over full logits; KL and answers are
+computed here against the stored reference and kept per position, so the
+report treats the GGUF like any other arm.
 
 --model picks a profile from PROFILES: its checkpoints, its reference, the
 build whose tokenizer and chat template make the sets, and its data
@@ -748,6 +754,111 @@ def cmd_forward(args):
         mx.clear_cache()
 
 
+# ── GGUF arms ────────────────────────────────────────────────────────────────
+
+
+GGUF_LOGITS = Path(os.environ.get("GGUF_LOGITS", "~/src/mlx/bin/gguf-logits")).expanduser()
+
+
+class GGUFLogits:
+    """gguf-logits as a subprocess: token ids in, float32 logits out."""
+
+    def __init__(self, path, n_ctx):
+        import subprocess
+
+        self.p = subprocess.Popen([str(GGUF_LOGITS), str(path), str(n_ctx)],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.n_vocab = self._ints(1)[0]
+        self.pending = 0
+
+    def _read(self, n):
+        buf = bytearray()
+        while len(buf) < n:
+            got = self.p.stdout.read(n - len(buf))
+            if not got:
+                sys.exit(f"gguf-logits ended early (exit {self.p.wait()})")
+            buf += got
+        return bytes(buf)
+
+    def _ints(self, n):
+        import struct
+
+        return struct.unpack(f"<{n}i", self._read(4 * n))
+
+    def send(self, ids, mode):
+        import struct
+
+        self.p.stdin.write(struct.pack(f"<{len(ids) + 2}i", len(ids), mode, *ids))
+        self.p.stdin.flush()
+
+    def rows(self, k):
+        """The next k rows of logits as an mx array [k, n_vocab]."""
+        import mlx.core as mx
+        import numpy as np
+
+        return mx.array(np.frombuffer(self._read(4 * k * self.n_vocab), np.float32).reshape(k, -1))
+
+    def pieces(self, ids):
+        self.send(ids, 2)
+        return [self._read(self._ints(1)[0]) for _ in ids]
+
+    def close(self):
+        self.p.stdin.write(b"\0" * 8)
+        self.p.stdin.close()
+        self.p.wait()
+
+
+def cmd_gguf(args):
+    """A GGUF build as an arm: KL rows and multiple-choice answers, stored per set."""
+    import mlx.core as mx
+
+    sets = load_sets(args.data, args.sets.split(",") if args.sets else None)
+    out = args.data / "hidden" / args.arm
+    out.mkdir(parents=True, exist_ok=True)
+    n_ctx = max(len(s) for st in sets.values() for s in st["seqs"])
+    g = GGUFLogits(args.gguf, n_ctx)
+
+    # Same token ids, same strings? A GGUF converted from the same tokenizer
+    # keeps the ids; check a sample of the text set anyway.
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(str(ckpt_path(TOKENIZER_ARM)))
+    sample = sorted(set(next(iter(sets.values()))["seqs"][0][:2000]))
+    mismatch = [i for i, piece in zip(sample, g.pieces(sample))
+                if piece.decode("utf-8", "replace") != tok.decode([i])]
+    if len(mismatch) > len(sample) // 100:
+        sys.exit(f"tokenizers differ on {len(mismatch)} of {len(sample)} ids, e.g. {mismatch[:5]}")
+    info = {"gguf": str(args.gguf), "size_bytes": args.gguf.stat().st_size, "n_vocab": g.n_vocab,
+            "piece_mismatches": len(mismatch), "date": time.strftime("%Y-%m-%d")}
+    (out / "gguf.json").write_text(json.dumps(info, indent=1))
+    heads = {REFERENCE: head_weight(ckpt_path(REFERENCE), head_path(args.data, REFERENCE))}
+
+    for name, st in sets.items():
+        if rows_path(args.data, args.arm, name).exists() or mc_path(args.data, args.arm, name).exists():
+            continue
+        t0 = time.time()
+        log(f"{args.arm} / {name}: {len(st['seqs'])} sequences, {sum(map(len, st['seqs'])):,} tokens")
+        if st["score"] == "all":
+            def arm_logits(j, a, b):
+                if a == 0:
+                    g.send(st["seqs"][j], 0)
+                return g.rows(b - a)
+
+            h_ref = mx.load(str(hidden_path(args.data, REFERENCE, name)))["h"]
+            rows = text_scores(h_ref, None, heads[REFERENCE], None, st["seqs"], st["meta"],
+                               st.get("spans"), arm_logits=arm_logits)
+            rows_path(args.data, args.arm, name).write_text(json.dumps(rows))
+        else:
+            logits = []
+            for s in st["seqs"]:
+                g.send(s, 1)
+                logits.append(g.rows(1))
+            sc = mc_scores(None, None, st["letter_ids"], st["meta"], logits=mx.concatenate(logits))
+            mc_path(args.data, args.arm, name).write_text(json.dumps(sc))
+        log(f"  {time.time() - t0:.0f} s")
+    g.close()
+
+
 # ── heads and scoring ────────────────────────────────────────────────────────
 
 
@@ -899,15 +1010,23 @@ def _paired(ref, arm):
     }
 
 
-def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, spans=None, chunk=512):
+def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, spans=None, chunk=512, arm_logits=None):
     """Per scored position: KL(ref||arm), top-1 agreement, NLL of both, group keys.
 
     Row: (lang, period, second half, KL, NLL ref, NLL arm, same top, target in
     an assistant span).
+
+    `arm_logits(j, a, b)`, if given, returns the arm's logits for positions
+    a..b-1 of sequence j instead of h_arm @ w_arm (GGUF arms). If the arm's
+    vocabulary is shorter than the reference's (Apertus 1.5 text builds drop
+    the image and audio tokens), both are cut to the common part, i.e. the
+    reference is renormalised over the text vocabulary; the reference's
+    probability mass outside it is logged.
     """
     import mlx.core as mx
 
     rows = []
+    outside = []
     off = 0
     with mx.stream(mx.cpu):
         for j, (s, m) in enumerate(zip(seqs, meta)):
@@ -919,7 +1038,11 @@ def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, spans=None, chunk=512):
             for a in range(0, L - 1, chunk):
                 b = min(a + chunk, L - 1)
                 lr = h_ref[off + a : off + b] @ w_ref.T
-                la = h_arm[off + a : off + b] @ w_arm.T
+                la = arm_logits(j, a, b) if arm_logits else h_arm[off + a : off + b] @ w_arm.T
+                V = min(lr.shape[-1], la.shape[-1])
+                if lr.shape[-1] > V:
+                    outside.append((1 - mx.exp(mx.logsumexp(lr[:, :V], -1) - mx.logsumexp(lr, -1))).max().item())
+                lr, la = lr[:, :V], la[:, :V]
                 lpr, lpa = _log_softmax(lr), _log_softmax(la)
                 kl = (mx.exp(lpr) * (lpr - lpa)).sum(-1)
                 t = targets[a:b]
@@ -933,6 +1056,8 @@ def text_scores(h_ref, h_arm, w_ref, w_arm, seqs, meta, spans=None, chunk=512):
                     rows.append((m["lang"], m.get("period"), a + i >= L // 2, k, r, q, g,
                                  a + i + 1 in inside))
             off += L
+    if outside:
+        log(f"  reference cut to the arm's {V:,} tokens; its mass outside: max {max(outside):.2e}")
     return rows
 
 
@@ -965,12 +1090,13 @@ def _summ(rows):
     }
 
 
-def mc_scores(h, w, letter_ids, meta):
+def mc_scores(h, w, letter_ids, meta, logits=None):
     import mlx.core as mx
 
     ids = mx.array([i[0] for i in letter_ids])
     with mx.stream(mx.cpu):
-        logits = h @ w.T
+        if logits is None:
+            logits = h @ w.T
         top = logits.argmax(-1)
         pick = logits[:, ids].argmax(-1)
         mx.eval(top, pick)
@@ -983,15 +1109,49 @@ def mc_scores(h, w, letter_ids, meta):
     }
 
 
-def cmd_report(args):
+def rows_path(data, arm, set_name):
+    return data / "hidden" / arm / f"{set_name}.rows.json"
+
+
+def mc_path(data, arm, set_name):
+    return data / "hidden" / arm / f"{set_name}.mc.json"
+
+
+def _is_gguf(data, arm):
+    return (data / "hidden" / arm / "gguf.json").exists()
+
+
+def _has(data, arm, name):
+    return any(p(data, arm, name).exists() for p in (hidden_path, rows_path, mc_path))
+
+
+def _text_rows(data, arm, name, st, heads):
+    """Scored positions of an arm: stored (GGUF arms) or from its hidden states."""
     import mlx.core as mx
 
+    if rows_path(data, arm, name).exists():
+        return [tuple(r) for r in json.loads(rows_path(data, arm, name).read_text())]
+    h_ref = mx.load(str(hidden_path(data, REFERENCE, name)))["h"]
+    h_arm = mx.load(str(hidden_path(data, arm, name)))["h"]
+    return text_scores(h_ref, h_arm, heads[REFERENCE], heads[arm], st["seqs"], st["meta"],
+                       st.get("spans"))
+
+
+def _mc(data, arm, name, letter_ids, meta, heads):
+    import mlx.core as mx
+
+    if mc_path(data, arm, name).exists():
+        return json.loads(mc_path(data, arm, name).read_text())
+    return mc_scores(mx.load(str(hidden_path(data, arm, name)))["h"], heads[arm], letter_ids, meta)
+
+
+def cmd_report(args):
     data = args.data
     arms = [a for a in os.listdir(data / "hidden") if (data / "hidden" / a).is_dir()]
     if REFERENCE not in arms:
         sys.exit(f"no reference hidden states; run `forward --ckpt {REFERENCE}` first")
     sets = load_sets(data)
-    heads = {a: head_weight(ckpt_path(a), head_path(data, a)) for a in arms}
+    heads = {a: head_weight(ckpt_path(a), head_path(data, a)) for a in arms if not _is_gguf(data, a)}
     result = {
         "date": time.strftime("%Y-%m-%d"),
         "versions": _versions(),
@@ -1002,12 +1162,9 @@ def cmd_report(args):
     per_question = []
 
     for arm in arms:
-        if arm == REFERENCE or not hidden_path(data, arm, "text").exists():
+        if arm == REFERENCE or not _has(data, arm, "text"):
             continue
-        h_ref = mx.load(str(hidden_path(data, REFERENCE, "text")))["h"]
-        h_arm = mx.load(str(hidden_path(data, arm, "text")))["h"]
-        st = sets["text"]
-        rows = text_scores(h_ref, h_arm, heads[REFERENCE], heads[arm], st["seqs"], st["meta"])
+        rows = _text_rows(data, arm, "text", sets["text"], heads)
         groups = {"all": rows}
         for lang in ("de", "en"):
             groups[lang] = [r for r in rows if r[0] == lang]
@@ -1022,12 +1179,9 @@ def cmd_report(args):
             continue
         result["kld"][name] = {}
         for arm in arms:
-            if arm == REFERENCE or not hidden_path(data, arm, name).exists():
+            if arm == REFERENCE or not _has(data, arm, name):
                 continue
-            h_ref = mx.load(str(hidden_path(data, REFERENCE, name)))["h"]
-            h_arm = mx.load(str(hidden_path(data, arm, name)))["h"]
-            rows = text_scores(h_ref, h_arm, heads[REFERENCE], heads[arm], st["seqs"],
-                               st["meta"], st.get("spans"))
+            rows = _text_rows(data, arm, name, st, heads)
             groups = {"all": rows}
             for lang in sorted({m["lang"] for m in st["meta"]}):
                 groups[lang] = [r for r in rows if r[0] == lang]
@@ -1042,9 +1196,8 @@ def cmd_report(args):
         result["mc"][name] = {}
         per_arm = {}
         for arm in arms:
-            p = hidden_path(data, arm, name)
-            if p.exists():
-                per_arm[arm] = mc_scores(mx.load(str(p))["h"], heads[arm], st["letter_ids"], st["meta"])
+            if _has(data, arm, name):
+                per_arm[arm] = _mc(data, arm, name, st["letter_ids"], st["meta"], heads)
         for arm, sc in per_arm.items():
             for m, pred, ok in zip(st["meta"], sc["preds"], sc["correct"]):
                 per_question.append({"set": name, "id": m["id"], "arm": arm,
@@ -1080,11 +1233,10 @@ def cmd_report(args):
         shift = st["meta"][0]["shift"]
         res = {}
         for arm in arms:
-            p0, p1 = hidden_path(data, arm, base), hidden_path(data, arm, name)
-            if not (p0.exists() and p1.exists()):
+            if not (_has(data, arm, base) and _has(data, arm, name)):
                 continue
-            s0 = mc_scores(mx.load(str(p0))["h"], heads[arm], st["letter_ids"], sets[base]["meta"])
-            s1 = mc_scores(mx.load(str(p1))["h"], heads[arm], st["letter_ids"], st["meta"])
+            s0 = _mc(data, arm, base, st["letter_ids"], sets[base]["meta"], heads)
+            s1 = _mc(data, arm, name, st["letter_ids"], st["meta"], heads)
             back = [LETTERS[(LETTERS.index(x) - shift) % 4] for x in s1["preds"]]
             n = len(back)
             res[arm] = {
@@ -1195,13 +1347,18 @@ def main(profile=None, doc=__doc__):
     p.add_argument("--sets", help="comma-separated subset of sets")
     p.add_argument("--chunk", type=int,
                    help="prefill in pieces of this many tokens (noise-floor arm, e.g. 512)")
+    p = sub.add_parser("gguf")
+    p.add_argument("--gguf", type=Path, required=True, help="the .gguf file (first shard if split)")
+    p.add_argument("--arm", required=True)
+    p.add_argument("--sets", help="comma-separated subset of sets")
     sub.add_parser("report")
     args = ap.parse_args()
     use_profile(profile or args.model)
     args.data = (args.data or Path(DEFAULT_DATA)).expanduser()
     if args.cmd == "check" and not args.ckpt:
         args.ckpt = TOKENIZER_ARM
-    {"prepare": cmd_prepare, "check": cmd_check, "forward": cmd_forward, "report": cmd_report}[
+    {"prepare": cmd_prepare, "check": cmd_check, "forward": cmd_forward, "gguf": cmd_gguf,
+     "report": cmd_report}[
         args.cmd
     ](args)
 
