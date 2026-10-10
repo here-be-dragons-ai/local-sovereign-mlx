@@ -8,10 +8,13 @@ API key, nothing leaves the machine.
 |---|---|---|---|---|
 | **Qwen3.8-27B** (dense, 4 bit) | 15.0 GiB | 32 GB and up | 17.5–41.5 t/s | `./start-mlx_qwen3.8.sh` |
 | **Kolibri 1** (Aleph Alpha, 78B-A3.5B MoE, 3/6 bit) | 32.8 GiB | 48 GB | ~70 t/s | `./start-mlx_kolibri.sh` |
+| **Apertus 1.5 8B** (swiss-ai, text + image + audio, 8 bit) | 9.4 GB | 16 GB and up | 30–33 t/s | `./start-mlx_apertus.sh` |
+| **Apertus 1.5 70B** (swiss-ai, text, 3/6 bit with AWQ) | 30.4 GiB | 48 GB | ~8.7 t/s | `./start-mlx_apertus70b.sh` |
 
-Both serve on `127.0.0.1:8888`, **one at a time** -- they do not fit into
-memory together. Most of this README is about Qwen3.8-27B, the setup's
-original and most-tuned model; Kolibri has [its own section](#kolibri-1).
+Qwen3.8 and Kolibri serve on `127.0.0.1:8888`, Apertus on `:8890`, **one at a
+time** -- they do not fit into memory together. Most of this README is about
+Qwen3.8-27B, the setup's original and most-tuned model; Kolibri and Apertus
+have their own sections ([Kolibri 1](#kolibri-1), [Apertus 1.5](#apertus-15)).
 
 ---
 
@@ -420,6 +423,40 @@ prompt.
 
 ---
 
+## Apertus 1.5
+
+[swiss-ai/Apertus-v1.5-8B](https://huggingface.co/swiss-ai/Apertus-v1.5-8B) and
+[-70B](https://huggingface.co/swiss-ai/Apertus-v1.5-70B): the fully open
+multilingual models of the Swiss AI Initiative (ETH Zurich, EPFL, CSCS),
+Apache 2.0 plus the Apertus Acceptable Use Policy, gated on Hugging Face. The
+8B reads images and audio as discrete tokens. mlx-vlm does not carry Apertus
+1.5 yet; both start scripts run their own venv with the `apertus1p5` branch of
+[here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5).
+
+| build | recipe | quality against the original |
+|---|---|---|
+| [`Apertus-v1.5-8B-MLX-8bit`](https://huggingface.co/here-be-dragons-ai/Apertus-v1.5-8B-MLX-8bit) | 8 bit, image and audio tokenizers in float32 | mean KL 0.002 on every text set (3–7× the noise floor); MMLU 5-shot 66.9% like bf16, equivalent within ±1 point; same 32 greedy tokens as bf16 on 64% of 300 prompts |
+| `Apertus-v1.5-70B-MLX-3bit` (private) | text only, decoder 3 bit with AWQ scales, embedding and head 6 bit (`awq-apertus-scales.py`, `convert-apertus-3bit.py`) | not measured against bf16 yet |
+
+Plain round-to-nearest 3 bit breaks Apertus (`up_proj` in front of the xIELU
+activation carries large outliers); the 70B therefore gets AWQ scales,
+computed layer by layer so the 140 GB bf16 model never has to fit in memory.
+Both builds are reproducible byte for byte with the recorded tools
+(`verify-build.py`). Details and raw data:
+[docs/apertus-quality/](docs/apertus-quality/README.md).
+
+```sh
+# 8B: text, image (image_url) and audio (input_audio); thinking per request with "enable_thinking": true
+./start-mlx_apertus.sh            # 127.0.0.1:8890
+# 70B: text only, 8-bit KV cache by default; clients should stay at 32k context
+./start-mlx_apertus70b.sh
+```
+
+Thinking is marked `<|inner_prefix|>` … `<|inner_suffix|>`, not `<think>`.
+Time to first token is still to be measured on stable mains power.
+
+---
+
 ## Patches
 
 Nine patches against `site-packages`, applied by `patches/apply-patches.sh`
@@ -601,6 +638,8 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | [docs/build-mlx.md](docs/build-mlx.md) | building mlx 0.32.2 for fused `head_dim 256` |
 | [docs/flash-next.md](docs/flash-next.md) | Qwen3.8-Flash-Next (177B) on 48 GB: how to spot a broken conversion, external PLE, expert offloading, why it lands at 4 tok/s |
 | `docs/upstream-kolibri1.patch` | Kolibri 1 for plain mlx-vlm main (upstream PR `#2424`) |
+| [docs/quality-method.md](docs/quality-method.md) | how we measure a quantized build against its original (KL distribution, noise floor, equivalence tests, MMLU 5-shot, Divergence @32) |
+| [docs/kolibri-quality/](docs/kolibri-quality/README.md), [docs/apertus-quality/](docs/apertus-quality/README.md) | results and raw data per model |
 | `patches/apply-patches.sh` | the patch set, each with its measurement |
 
 ---
@@ -614,7 +653,16 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | `start-mlx_kolibri.sh` | Kolibri 1 server start |
 | `chat-kolibri.sh` | Kolibri 1 terminal chat, no server |
 | `convert-kolibri.py` | Kolibri 1 FP8 release → mixed 3/6-bit MLX checkpoint |
-| `measure-kolibri-quality.py` | Kolibri 1 quantization loss vs the FP8 release: KL, perplexity, Belebele, Global-MMLU-Lite (layer-streamed) |
+| `measure-quality.py` | quantization loss of a build vs its original, layer-streamed: KL distribution, noise floor, multiple choice with equivalence tests (profiles `kolibri`, `apertus`) |
+| `measure-kolibri-quality.py`, `measure-apertus-quality.py` | the same with the profile fixed |
+| `measure-mmlu.py` | MMLU 5-shot, Hendrycks format, shared prefix, validated harness |
+| `measure-divergence.py` | Divergence @32: greedy 32-token trajectories against the original |
+| `quality-tables.py`, `quality-summary.py` | doc tables and verified-label summary from a result |
+| `start-mlx_apertus.sh`, `start-mlx_apertus70b.sh` | Apertus 1.5 8B / 70B server start |
+| `awq-apertus-scales.py`, `convert-apertus-3bit.py` | Apertus 1.5 AWQ scales layer by layer, 3/6-bit conversion |
+| `verify-build.py`, `strip-prefix.py`, `rename-keys.py` | reproduce and compare a build with the published one; key-layout tools |
+| `power-guard.sh` | pauses long measurement runs while the battery is low |
+| `aider-polyglot.sh` | Aider Polyglot benchmark in Docker against the local server |
 | `measure-kolibri-ttft.py` | Kolibri 1 time to first token, cold and on an exact-APC hit |
 | `watchdog-mlx_qwen3.8.sh` | restarts the server before memory fills up |
 | `download-mlx-model.sh` | resumable HuggingFace downloader, with size check |

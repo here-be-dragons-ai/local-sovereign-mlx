@@ -610,11 +610,21 @@ def load_sets(data, names=None):
 # ── forward ──────────────────────────────────────────────────────────────────
 
 
+# Text-only builds in mlx-lm's format (e.g. community Apertus 1.5 "text" builds,
+# model_type "apertus") load through mlx-lm; everything else through mlx-vlm.
+MLX_LM_TYPES = {"apertus"}
+
+
 def load_lazy(path):
     """The model with lazy weights; the FP8 release goes through the staging copy."""
+    config = json.loads((path / "config.json").read_text())
+    if config.get("model_type") in MLX_LM_TYPES:
+        from mlx_lm.utils import load_model
+
+        model, _ = load_model(path, lazy=True)
+        return model
     from mlx_vlm import load
 
-    config = json.loads((path / "config.json").read_text())
     if "quantization_config" in config:
         conv = _load_sibling("convert-kolibri.py", "_conv")
         staging = conv.make_staging(path)
