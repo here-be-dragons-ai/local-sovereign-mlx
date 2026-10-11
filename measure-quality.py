@@ -164,8 +164,15 @@ def _load_sibling(name, alias):
     return mod
 
 
-def use_profile(name):
+def use_profile(name, ref=None, build=None, model_id=None):
+    """A named profile, or "generic": any original (ref) against one build."""
     global CHECKPOINTS, REFERENCE, TOKENIZER_ARM, DEFAULT_DATA
+    if name == "generic":
+        PROFILES["generic"] = {
+            "checkpoints": {"ref": Path(ref).expanduser(), "build": Path(build).expanduser()},
+            "reference": "ref", "tokenizer": "ref",
+            "data": f"~/src/mlx/quality/{model_id or Path(ref).name}",
+        }
     prof = PROFILES[name]
     CHECKPOINTS = prof["checkpoints"]
     REFERENCE = prof["reference"]
@@ -245,6 +252,9 @@ def fetch_gmmlu(lang):
 
 
 def chat_ids(tok, user):
+    if not getattr(tok, "chat_template", None):
+        # No chat template (e.g. Pleias-RAG's own prompt format): the plain prompt.
+        return tok.encode(user)
     enc = tok.apply_chat_template(
         [{"role": "user", "content": user}],
         tokenize=True,
@@ -275,6 +285,9 @@ def cmd_prepare(args):
         n for n, (_, f) in builders.items() if not (data / "sets" / f"{f}.json").exists()
     ]
     for n in names:
+        if n in ("chat", "tools") and not getattr(tok, "chat_template", None):
+            log(f"set {n}: skipped, the tokenizer has no chat template")
+            continue
         builders[n][0](data, tok)
 
 
@@ -621,10 +634,32 @@ def load_sets(data, names=None):
 MLX_LM_TYPES = {"apertus"}
 
 
+def _mlx_lm_knows(config):
+    import importlib.util
+
+    mt = config.get("model_type", "")
+    return importlib.util.find_spec(f"mlx_lm.models.{mt}") is not None if mt else False
+
+
+def layer_window(inner, layer):
+    """Sliding-window size of a decoder layer, or None (full attention).
+
+    Kolibri/mlx-vlm mark layers with use_sliding; mlx-lm models use is_sliding
+    or a per-layer sliding_window on the attention.
+    """
+    if getattr(layer, "use_sliding", False) or getattr(layer, "is_sliding", False):
+        return (getattr(inner, "sliding_window", None) or getattr(getattr(inner, "args", None), "sliding_window", None)
+                or getattr(getattr(layer, "self_attn", None), "sliding_window", None))
+    w = getattr(getattr(layer, "self_attn", None), "sliding_window", None)
+    return w if isinstance(w, int) and w > 0 else None
+
+
 def load_lazy(path):
     """The model with lazy weights; the FP8 release goes through the staging copy."""
     config = json.loads((path / "config.json").read_text())
-    if config.get("model_type") in MLX_LM_TYPES:
+    if config.get("model_type") in MLX_LM_TYPES or (
+        CHECKPOINTS is PROFILES.get("generic", {}).get("checkpoints") and _mlx_lm_knows(config)
+    ):
         from mlx_lm.utils import load_model
 
         model, _ = load_model(path, lazy=True)
@@ -679,8 +714,8 @@ def streamed_forward(lm, seqs, keep_last, partial=None, chunk=None):
     for i in range(start, len(layers)):
         t0 = time.time()
         layer = layers[i]
-        sliding = getattr(layer, "use_sliding", False)
-        window = inner.sliding_window if sliding else None
+        window = layer_window(inner, layer)
+        sliding = window is not None
         for j, h in enumerate(hs):
             L = h.shape[1]
             if chunk:
@@ -873,7 +908,8 @@ def head_weight(path, cache=None):
     if cache is not None and cache.exists():
         t, meta = mx.load(str(cache), return_metadata=True)
     else:
-        head = load_lazy(path).lm_head
+        lm = load_lazy(path)
+        head = getattr(lm, "lm_head", None) or lm.model.embed_tokens  # tied: the embedding is the head
         t = {"weight": head.weight}
         meta = {}
         if hasattr(head, "scales"):
@@ -903,16 +939,15 @@ def head_path(data, arm):
 def cmd_check(args):
     """Streamed forward against the ordinary in-memory forward on the same checkpoint."""
     import mlx.core as mx
-    from mlx_vlm import load
 
     path = ckpt_path(args.ckpt)
     st = load_sets(args.data, ["text"])["text"]
     seqs = [s[:n] for s, n in zip(st["seqs"][:3], (300, 700, 1500))]
 
-    model, _ = load(str(path))
+    model = load_lazy(path)
     ref = []
     for s in seqs:
-        h = model.language_model.model(mx.array([s]))[0].astype(mx.float32)
+        h = model.model(mx.array([s]))[0].astype(mx.float32)
         mx.eval(h)
         ref.append(h)
     del model
@@ -1359,7 +1394,10 @@ def _print_position(r):
 def main(profile=None, doc=__doc__):
     ap = argparse.ArgumentParser(description=doc.split("\n\n")[0])
     if profile is None:
-        ap.add_argument("--model", required=True, choices=sorted(PROFILES))
+        ap.add_argument("--model", required=True, choices=sorted(PROFILES) + ["generic"])
+        ap.add_argument("--ref", help="generic: the original's directory")
+        ap.add_argument("--build", help="generic: the build's directory")
+        ap.add_argument("--id", help="generic: name of the data directory (~/src/mlx/quality/<id>)")
     ap.add_argument("--data", type=Path, help="data directory (default: the profile's)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prepare")
@@ -1381,7 +1419,10 @@ def main(profile=None, doc=__doc__):
     p.add_argument("--arms", required=True, help="comma-separated arms")
     sub.add_parser("report")
     args = ap.parse_args()
-    use_profile(profile or args.model)
+    if (profile or args.model) == "generic" and not (args.ref and args.build):
+        ap.error("--model generic needs --ref and --build")
+    use_profile(profile or args.model, getattr(args, "ref", None), getattr(args, "build", None),
+                getattr(args, "id", None))
     args.data = (args.data or Path(DEFAULT_DATA)).expanduser()
     if args.cmd == "check" and not args.ckpt:
         args.ckpt = TOKENIZER_ARM
