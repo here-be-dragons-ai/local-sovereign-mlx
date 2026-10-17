@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Convert Aleph-Alpha/Kolibri-1 (block-FP8) to a mixed 3/6-bit MLX checkpoint.
 
-Needs the kolibri1 model package in mlx_vlm (patch 0050).
+Runs on this repository's own kolibri1 package (../kolibri1/), not on the one
+mlx-vlm ships since #2423: use_local_kolibri1() puts it in place of
+mlx_vlm.models.kolibri1 for this process. Only the local package dequantizes
+the FP8 release, and its parameter names (mlp.experts.*, mlp.expert_bias) are
+the ones the shipped checkpoint and the quality tools are written against.
 
 Recipe, sized for 48 GB with iogpu.wired_limit_mb=40960:
   routed experts       3 bit, group 64   (75.5B of 78.1B parameters)
@@ -23,11 +27,14 @@ measure-kolibri-quality.py (issue #8); it is not a recipe to ship.
 """
 
 import argparse
+import importlib.util
 import json
 import shutil
 import sys
 import tempfile
 from pathlib import Path
+
+LOCAL_KOLIBRI1 = Path(__file__).resolve().parent / "kolibri1"
 
 EXPERT_BITS = 3
 OTHER_BITS = 6
@@ -43,6 +50,31 @@ def make_predicate(other_bits):
         return {"group_size": GROUP_SIZE, "bits": other_bits, "mode": "affine"}
 
     return predicate
+
+
+def use_local_kolibri1():
+    """Load ../kolibri1/ as mlx_vlm.models.kolibri1 for this process.
+
+    mlx-vlm resolves a model_type through importlib.import_module, which takes
+    sys.modules first. Was patch 0050 until upstream shipped its own kolibri1
+    (#2423), which loads the MLX checkpoints but not the FP8 release. Call it
+    before anything loads a Kolibri model; a kolibri1 already imported from
+    mlx-vlm is replaced.
+    """
+    name = "mlx_vlm.models.kolibri1"
+    current = sys.modules.get(name)
+    if current is not None and Path(current.__file__).parent == LOCAL_KOLIBRI1:
+        return
+    import mlx_vlm.models  # noqa: F401  (the parent package must exist)
+
+    for key in [k for k in sys.modules if k == name or k.startswith(name + ".")]:
+        del sys.modules[key]
+    spec = importlib.util.spec_from_file_location(
+        name, LOCAL_KOLIBRI1 / "__init__.py", submodule_search_locations=[str(LOCAL_KOLIBRI1)]
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
 
 
 def make_staging(src: Path) -> Path:
@@ -75,6 +107,7 @@ def main():
     if dst.exists():
         sys.exit(f"[ERROR] {dst} exists")
 
+    use_local_kolibri1()
     from mlx_vlm.convert import convert
 
     staging = make_staging(src)

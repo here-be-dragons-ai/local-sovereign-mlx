@@ -56,7 +56,30 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 [[ "$WANT_MODEL" == kolibri ]] || WANT_QWEN=1
 [[ "$WANT_MODEL" == qwen ]]    || WANT_KOLIBRI=1
 
-# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-09-29).
+# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-10-17).
+#
+# 2026-10-17: mlx-vlm is on a GIT COMMIT again, main @ b8bf04c (reports
+# "0.7.8", the same string as the 0.7.8 tag, which lacks the three PRs below).
+# Not a release because the fixes that matter here landed after v0.7.8:
+#   #2525  a finished SpeculativeGenerationBatch kept its whole prompt cache
+#          resident until the next prefill completed -- with a drafter, the
+#          previous context sat in memory through the next request's prefill.
+#   #2510  qwen3_5 ragged decode read K/V through mx.contiguous, copying each
+#          full-attention layer's KV cache on every decode step (B > 1).
+#   #2527  bf16 parity of the fused quantized projections under mlx 0.32.4.
+# Plus, from the 0.7.5-0.7.8 releases: #2498 (tool schemas rendered with
+# sorted keys, so equivalent tool lists hit the same APC prefix), #2442
+# (packed gated-delta kernel for Qwen3.5 prefill), #2273, #2423 (Kolibri 1
+# upstream, which replaces patch 0050 for serving).
+# main requires mlx>=0.32.4; 0.32.4 is what it is tested against. With the
+# v0.7.8 TAG, mlx 0.32.4 fails 111 speculative parity tests (fixed by #2527),
+# so tag and mlx version must not be mixed. All patches but 0050 apply to
+# b8bf04c without fuzz; the upstream suites for cache/generate/speculative/
+# server/gated_delta/tool_streaming pass with and without them (1831).
+# The git requirement sits INSIDE PINS together with the exact mlx pin, so uv
+# resolves both at once and cannot slide mlx down (the 09-17 --no-deps trap).
+# Move back to a plain version pin with the first release that contains
+# #2525. Measured: docs/upstream-2026-10-17.md.
 #
 # 0.7.4 (2026-09-28, tagged at 0009367) over 0.7.3: on this setup's path #2357
 # (Qwen3.5 left padding), #2358 (sampler clamp / top-p) and the tool-call fixes
@@ -118,15 +141,17 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 # --latest gets you something newer; apply-patches.sh may then report "CONFLICT"
 # (meaning: merged upstream -> delete the patch) and the measured values in the
 # start script no longer hold unexamined.
-# mlx-vlm is back inside PINS since 0.7.2. It declares `mlx>=0.32.2`, a lower
-# bound, so resolving it together with the exact mlx pin below keeps 0.32.2 --
-# the reason the git requirement needed its own --no-deps install (a git
-# requirement let uv reconsider mlx, drop it to 0.32.1, and silently disable
-# patch 0013) no longer applies.
+# mlx-vlm is inside PINS since 0.7.2, and stays there as a git requirement:
+# resolved together with the exact mlx pin below, uv keeps mlx where it is.
+# The --no-deps install of 09-17 existed because a SEPARATE git install let uv
+# reconsider mlx, drop it to 0.32.1, and silently disable patch 0013.
+# mlx-lm stays 0.31.3: nothing in 0.32.x is on our path (no Kolibri, no
+# Apertus 1.5; mlx-vlm no longer imports mlx-lm at all, it vendors the gated
+# delta kernel), and the quality tools' numbers are measured against it.
 PINS=(
-  "mlx==0.32.2"
+  "mlx==0.32.4"
   "mlx-lm==0.31.3"
-  "mlx-vlm==0.7.4"
+  "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@b8bf04c6dd7f3bd3a2a5033bbfecef6375c3bfb0"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
@@ -140,7 +165,8 @@ DRAFT_DIR="$MLX_MODELS/Qwen3.8-27B-MTP-4bit"
 MODEL_ALIAS="${MODEL_ALIAS:-Qwen3.8-27B-local}"
 # Kolibri 1: experts 3 bit, rest 6 bit, router bf16 -- made by
 # convert-kolibri.py from Aleph-Alpha/Kolibri-1 (FP8) and published as-is.
-# Loads only with patch 0050 (mlx_vlm/models/kolibri1).
+# Served by mlx-vlm's own kolibri1 (#2423, on main since 2026-10-06); the
+# conversion and quality tools use this repository's kolibri1/ instead.
 KOLIBRI_REPO="here-be-dragons-ai/Kolibri-1-MLX-3bit"
 KOLIBRI_DIR="$MLX_MODELS/Kolibri-1-MLX-3bit"
 KOLIBRI_ALIAS="Kolibri-1-local"
@@ -269,12 +295,11 @@ import json
 def origin(pkg):
     """Where did this come from -- PyPI or a git commit?
 
-    Since 0.7.2 the pin is a plain version again, so this normally prints
-    nothing for mlx-vlm. It is kept because a git install is invisible in the
-    version string: main @ 548b09b reported "0.7.1", the SAME string as the
-    PyPI 0.7.1 tag that loses exact APC after the first short prompt (#2259).
-    If a line below grows a "<- git ..." suffix, someone installed from source
-    and the version number alone no longer says what is running.
+    A git install is invisible in the version string: main @ 548b09b
+    reported "0.7.1", the SAME string as the PyPI 0.7.1 tag that loses exact
+    APC after the first short prompt (#2259), and main @ b8bf04c reports
+    "0.7.8" like the tag without #2525. Since 2026-10-17 mlx-vlm SHOULD show
+    "<- git b8bf04c"; a plain "0.7.8" without it is the tag, not the pin.
     """
     try:
         dist = m.distribution(pkg)

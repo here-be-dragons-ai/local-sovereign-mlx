@@ -666,8 +666,10 @@ def load_lazy(path):
         return model
     from mlx_vlm import load
 
+    conv = _load_sibling("convert-kolibri.py", "_conv")
+    if config.get("model_type") == "kolibri1":
+        conv.use_local_kolibri1()
     if "quantization_config" in config:
-        conv = _load_sibling("convert-kolibri.py", "_conv")
         staging = conv.make_staging(path)
         try:
             model, _ = load(str(staging), lazy=True)

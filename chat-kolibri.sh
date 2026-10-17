@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Interactive terminal chat with Kolibri 1 -- no server, the model is loaded
 # into this process (32.8 GiB). Same checkpoint and prerequisites as
-# start-mlx_kolibri.sh: patch 0050, iogpu.wired_limit_mb >= 40960, and no
+# start-mlx_kolibri.sh: mlx-vlm with kolibri1, iogpu.wired_limit_mb >= 40960, and no
 # MLX server running at the same time (both do not fit into memory).
 #
 # Commands inside the chat:
@@ -28,7 +28,7 @@ MODEL_DIR="${MODEL_DIR:-${MLX_MODELS:-$HOME/src/mlx/models}/Kolibri-1-MLX-3bit}"
 [[ -x "$VENV_PY" ]] || { echo "ERROR: no venv python at $VENV_PY (install-prereqs.sh)" >&2; exit 1; }
 [[ -f "$MODEL_DIR/config.json" ]] || { echo "ERROR: no checkpoint at $MODEL_DIR (install-prereqs.sh --model kolibri)" >&2; exit 1; }
 "$VENV_PY" -c "import mlx_vlm.models.kolibri1" 2>/dev/null || {
-  echo "ERROR: mlx_vlm has no kolibri1 model -- run patches/apply-patches.sh (0050)." >&2
+  echo "ERROR: mlx_vlm has no kolibri1 model -- run ./install-prereqs.sh (needs upstream #2423)." >&2
   exit 1
 }
 _WIRED_MB=$(sysctl -n iogpu.wired_limit_mb 2>/dev/null || echo 0)

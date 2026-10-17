@@ -582,11 +582,12 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 # ── Patch checks ──────────────────────────────────────────────────────────────
 SITE_PACKAGES=$("$VENV_PY" -c "import mlx_vlm,os;print(os.path.dirname(os.path.dirname(mlx_vlm.__file__)))")
-# Since 0.7.2 the pin is a plain release again and the version string is enough.
-# The git suffix is still appended when it applies, because it was NOT enough
-# between 09-17 and 09-21: the 0.7.1 PyPI tag and main @ 548b09b both reported
-# "0.7.1" and only one of them kept its prefix cache (#2259, guard below). If a
-# banner ever shows "(git ...)" again, the version number stopped saying what ran.
+# The git suffix matters: since 2026-10-17 the pin is main @ b8bf04c, which
+# reports "0.7.8" like the 0.7.8 tag -- and the tag lacks #2525/#2510/#2527.
+# It was the same between 09-17 and 09-21, when the 0.7.1 PyPI tag and main @
+# 548b09b both reported "0.7.1" and only one of them kept its prefix cache
+# (#2259, guard below). A banner showing "0.7.8" WITHOUT "(git b8bf04c)" runs
+# the tag, not the pin.
 MLX_VLM_VER=$("$VENV_PY" -c "
 import importlib.metadata as m, json
 v = m.version('mlx-vlm')
@@ -742,6 +743,18 @@ if ! grep -q "QWEN38_FUSED_LINEARS" \
   fi
 elif [[ "$QWEN38_FUSED_LINEARS" != "0" ]]; then
   QLIN_STATUS="fused (upstream default, ~9 GiB floor)"
+fi
+
+# ── Warm single-row decode (patch 0036) ──────────────────────────────────────
+# Upstream #2273 guards qwen3_5's single-row shortcut with
+# int(fa_cache.offset[0].item()) >= 0, a device sync on every decode step. That
+# is the path an exact-APC warm hit decodes on: measured 2026-10-17 at 28k
+# tokens without a drafter, warm 15.1 t/s against cold 15.8 (0.954); with 0036
+# warm/cold is 1.00 again. Same answer, read from _idx and left_padding.
+if grep -q "int(fa_cache.offset\[0\].item()) >= 0" \
+     "$SITE_PACKAGES/mlx_vlm/models/qwen3_5/language.py" 2>/dev/null; then
+  echo "⚠️  WARNING: patch 0036 missing -- warm (APC-restored) decode syncs every" >&2
+  echo "    step, ~4-5% slower than cold. Fix: ./patches/apply-patches.sh" >&2
 fi
 
 # With fused full attention the score transient disappears -- exactly the reason

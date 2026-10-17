@@ -87,58 +87,47 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
 
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
-**Pinned, verified state:** `mlx 0.32.2`, `mlx-lm 0.31.3`,
-**`mlx-vlm 0.7.4`**, `transformers 5.15.1`, `numpy 2.5.2`,
-`huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
+**Pinned, verified state (2026-10-17):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
+**`mlx-vlm` main @ `b8bf04c`** (reports `0.7.8`), `transformers 5.15.1`,
+`numpy 2.5.2`, `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
-> **`0.7.1` is the one release this setup cannot run.** Skip it. It carries the
-> APC redesign `#2182` but not its fix `#2262`, and the difference is upstream
-> issue **`#2259`**: the prefill reserve was sized from the largest
-> snapshot-bytes-per-token ratio the process had ever seen, as a monotonic
-> maximum. This model's 48 GDN layers hold a fixed recurrent state that does not
-> scale with tokens, so **one short prompt** sets that ratio ~10x too high, every
-> later prefill over-reserves, and exact APC stops storing *and* restoring for
-> the rest of the process lifetime -- with no error, only `memory_skips` rising
-> in `/metrics`. This server's traffic is short agent turns, so on that tag the
-> prefix cache dies within minutes.
->
-> From 2026-09-17 to 09-21 the pin was therefore a git commit, main @ `548b09b`,
-> installed with `--no-deps`. **`0.7.2` (2026-09-21) ends that** and the pin is a
-> plain version again:
+> **Why a commit and not the `0.7.8` release.** Three fixes on this setup's
+> path landed after the tag: **`#2525`** (a finished speculative batch kept
+> its whole prompt cache resident through the next prefill -- peak with
+> DFlash 2 at 28k tokens 27.4 -> 25.5 GiB here), **`#2510`** (Qwen3.5 ragged
+> decode copied the KV cache every step) and **`#2527`** (bf16 parity of the
+> fused quantized projections under `mlx 0.32.4`; with the tag, `mlx 0.32.4`
+> fails 111 upstream tests). main requires `mlx>=0.32.4`. The pin returns to a
+> plain version with the first release that contains `#2525`.
 >
 > ```sh
-> uv pip install --python ~/src/mlx/.venv/bin/python "mlx-vlm==0.7.4"
+> uv pip install --python ~/src/mlx/.venv/bin/python "mlx==0.32.4" \
+>   "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@b8bf04c6dd7f3bd3a2a5033bbfecef6375c3bfb0"
 > ```
 >
-> The upgrade is administrative. Diffed against the commit that had been
-> running, `0.7.2` has **no differences at all** in `apc.py`,
-> `apc_adapters.py`, `apc_coordinator.py`, `models/base.py`, `speculative/` and
-> `server/generation.py` -- the whole APC and speculative surface, and
-> everything the seven patches touch. All seven apply without fuzz.
+> Install both in **one** resolution (`install-prereqs.sh` does): a separate
+> git install lets uv reconsider `mlx`. And read the version with its origin:
+> the commit reports `0.7.8` exactly like the tag, so `install-prereqs.sh
+> --check` and the start banner append `(git b8bf04c)` -- a bare `0.7.8` is
+> the tag, not the pin. Measured: [docs/upstream-2026-10-17.md](docs/upstream-2026-10-17.md).
 >
-> `--no-deps` is no longer needed: `0.7.2` declares `mlx>=0.32.2`, a lower
-> bound, so the exact `mlx` pin survives the same resolution. Under the git
-> requirement it did not, and patch `0013` fell inert when `mlx` slid to 0.32.1
-> -- see [docs/build-mlx.md](docs/build-mlx.md).
+> **`0.7.1` stays the one release this setup cannot run.** It carries the APC
+> redesign `#2182` without its fix `#2262` (upstream issue **`#2259`**): one
+> short prompt on this hybrid model disables exact APC for the rest of the
+> process, silently. The start script tests for that **mechanism**
+> (`_bytes_per_token` in `apc.py`), not the version.
 >
-> The start script still tests for the `#2259` **mechanism** (`_bytes_per_token`
-> in `apc.py`) rather than the version, because the failure is silent and a
-> future release can reintroduce a proportional estimate.
->
-> Two things the tag does not fix: **`#2310`**, a KV-cache leak in
-> `GenerationBatch._eval_pending_state` that fires once per finished request on
-> this profile (measured harmless here; fixed by `#2328`, released in `0.7.3`), and **`#2239`**, the intermittent hang on requests carrying a
-> `tools` array.
+> `mlx-lm` stays at `0.31.3`: mlx-vlm no longer imports it, nothing in `0.32.x`
+> is on our path, and the quality tools are measured against it.
 
 0.6.16 removed two long-standing constraints that still hold: DFlash 2 ships
 upstream (PR #2014), and the ArraysCache buffer leak that killed generations at
 ~10.3k tokens is fixed (#1972 via PR #1984) -- verified here with 11,436 tokens
 in one response, peak 18.56 GiB. `max_tokens` no longer needs the old 8192 cap.
 
-`mlx 0.32.2` has been on PyPI since 2026-08-25 including `mlx-metal` and
-`macosx_26_0_arm64` wheels, so **no source build is required** for the fused
-`head_dim 256` path -- see [docs/build-mlx.md](docs/build-mlx.md) for the
-history.
+`mlx` comes from PyPI including `mlx-metal`, so **no source build is
+required** for the fused `head_dim 256` path -- see
+[docs/build-mlx.md](docs/build-mlx.md) for the history.
 
 ### Making the wired limit persistent
 
@@ -309,18 +298,21 @@ made by `convert-kolibri.py` from the FP8 release -- routed experts 3 bit,
 attention / shared expert / embedding / LM head 6 bit, router bf16. 3.61 bits
 per weight, 33 GiB. Uniform 4 bit would be ~44 GB and does not fit.
 
-mlx-vlm does not carry the model yet. Patch `0050` adds
-`mlx_vlm/models/kolibri1`, ported from Aleph Alpha's vLLM plugin and checked
-against a numpy forward of the vLLM semantics to 1e-5 on CPU. Upstream PR:
-`#2424`; `docs/upstream-kolibri1.patch` is the same model for plain mlx-vlm
-main.
+The server runs mlx-vlm's own `kolibri1` (upstream `#2423`, in the pinned
+commit). This repository's implementation -- ported from Aleph Alpha's vLLM
+plugin, checked against a numpy forward of the vLLM semantics to 1e-5 on CPU,
+formerly patch `0050` -- lives on in [`kolibri1/`](kolibri1/): on the 3-bit
+checkpoint both give bit-identical logits, but only ours dequantizes the FP8
+release, and the conversion and quality tools are written against its
+parameter names. `convert-kolibri.py` and `measure-quality.py` load it in
+place of the upstream module for their own process (`use_local_kolibri1()`).
 
 **Requirements:** 48 GB and `iogpu.wired_limit_mb=40960`. The start script
 refuses below that: the macOS default working set (32 GiB) cannot hold the
 weights.
 
 ```sh
-./install-prereqs.sh --model kolibri   # 33 GiB download + patch 0050
+./install-prereqs.sh --model kolibri   # 33 GiB download
 sudo ./set-iogpu-wired-limit.sh        # 40960 on 48 GB
 ./start-mlx_kolibri.sh                 # server, 127.0.0.1:8888
 ./chat-kolibri.sh                      # or: terminal chat, no server
@@ -463,11 +455,28 @@ Nine patches against `site-packages`, applied by `patches/apply-patches.sh`
 (idempotent, `--check` / `--revert`). **They vanish on every
 `pip install -U mlx-vlm`** -- run it again afterwards.
 
-Seven are **local work** for Qwen3.8-27B. `0050` adds the Kolibri 1 model
-(see [Kolibri 1](#kolibri-1)); it comes out when upstream merges `#2424`. One
-is a cherry-picked foreign PR again: `0035` is
-upstream `#2336` and fixes `#2210` (see below). It comes out when upstream merges
-it -- `apply-patches.sh` reports `CONFLICT` then.
+Eight are **local work** for Qwen3.8-27B. One is a cherry-picked foreign PR:
+`0035` is upstream `#2336` and fixes `#2210` (see below). It comes out when
+upstream merges it -- `apply-patches.sh` reports `CONFLICT` then. `0036` is
+stacked on it.
+
+What changed on 2026-10-17, moving to main @ `b8bf04c` with `mlx 0.32.4`:
+
+- **`0050` is gone.** mlx-vlm ships `kolibri1` since `#2423`; logits on our
+  checkpoint are bit-identical. The implementation moved to `kolibri1/` for
+  the FP8 tools (see [Kolibri 1](#kolibri-1)).
+- **`0036` is new.** `#2273` added `int(offset[0].item())` to the Qwen3.5
+  single-row decode path -- a device sync on every step of an exact-APC warm
+  hit. Without a drafter warm decode fell to 0.954 of cold; with `0036`, which
+  reads the same answer from `_idx` and `left_padding`, it is 1.00 again.
+- The other eight apply without fuzz; none is covered upstream. `0013` now only
+  matters below `qL 1024`: since `mlx 0.32.3` (`#4416`) the default dispatch
+  runs `head_dim 256` with an array mask fused from `qL >= 1024`.
+- Re-measured at 28,035 tokens against the old stack on the same day: decode
+  without a drafter 15.6 -> 16.0 t/s (cold and warm), DFlash 2 unchanged
+  within noise, peak memory with DFlash 2 27.4 -> 25.5 GiB. Greedy output
+  differs from `0.7.4`/`mlx 0.32.2` at token 12 on an exact bf16 tie.
+  Details in [docs/upstream-2026-10-17.md](docs/upstream-2026-10-17.md).
 
 The set shrank from eleven on 2026-08-28 when the APC redesign landed: `0021`
 became obsolete (the separate generation loop it worked around is gone) and
@@ -637,7 +646,7 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | [docs/drafter.md](docs/drafter.md) | DFlash 2 vs MTP, measurements, patch dependency |
 | [docs/build-mlx.md](docs/build-mlx.md) | building mlx 0.32.2 for fused `head_dim 256` |
 | [docs/flash-next.md](docs/flash-next.md) | Qwen3.8-Flash-Next (177B) on 48 GB: how to spot a broken conversion, external PLE, expert offloading, why it lands at 4 tok/s |
-| `docs/upstream-kolibri1.patch` | Kolibri 1 for plain mlx-vlm main (upstream PR `#2424`) |
+| `docs/upstream-*.md` | each upstream check and upgrade, with the measurements behind it |
 | [docs/quality-method.md](docs/quality-method.md) | how we measure a quantized build against its original (KL distribution, noise floor, equivalence tests, MMLU 5-shot, Divergence @32) |
 | [docs/kolibri-quality/](docs/kolibri-quality/README.md), [docs/apertus-quality/](docs/apertus-quality/README.md) | results and raw data per model |
 | `patches/apply-patches.sh` | the patch set, each with its measurement |
@@ -653,6 +662,7 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | `start-mlx_kolibri.sh` | Kolibri 1 server start |
 | `chat-kolibri.sh` | Kolibri 1 terminal chat, no server |
 | `convert-kolibri.py` | Kolibri 1 FP8 release → mixed 3/6-bit MLX checkpoint |
+| `kolibri1/` | our Kolibri 1 model package (formerly patch `0050`), loaded by the conversion and quality tools in place of mlx-vlm's |
 | `measure-quality.py` | quantization loss of a build vs its original, layer-streamed: KL distribution, noise floor, multiple choice with equivalence tests (profiles `kolibri`, `apertus`) |
 | `measure-kolibri-quality.py`, `measure-apertus-quality.py` | the same with the profile fixed |
 | `measure-mmlu.py` | MMLU 5-shot, Hendrycks format, shared prefix, validated harness |
@@ -663,6 +673,7 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | `verify-build.py`, `strip-prefix.py`, `rename-keys.py` | reproduce and compare a build with the published one; key-layout tools |
 | `power-guard.sh` | pauses long measurement runs while the battery is low |
 | `aider-polyglot.sh` | Aider Polyglot benchmark in Docker against the local server |
+| `measure-greedy-hash.py` | greedy-output fingerprint of a running server, before/after an upgrade |
 | `measure-kolibri-ttft.py` | Kolibri 1 time to first token, cold and on an exact-APC hit |
 | `watchdog-mlx_qwen3.8.sh` | restarts the server before memory fills up |
 | `download-mlx-model.sh` | resumable HuggingFace downloader, with size check |

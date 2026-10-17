@@ -12,20 +12,26 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
-# STATE 2026-09-29: verified against mlx-vlm 0.7.4 (tagged at 0009367) and
-# mlx 0.32.2. EIGHT patches: the 09-17 set plus 0035 (upstream PR #2336). All
-# eight apply to 0.7.4 and to main @ 967bf90 without rejects. 0.7.4 changes
-# models/qwen3_5/language.py (#2357) and server/generation.py (#2358) next to
-# 0035 and 0012; neither hunk overlaps.
-#   - 2026-10-03: 0050 ADDS a model package, mlx_vlm/models/kolibri1/
-#     (Aleph-Alpha/Kolibri-1, model_type "kolibri1"), touches no existing file.
-#     Ported from aleph_alpha_inference/kolibri1.py; matches an independent
-#     numpy forward of the vLLM semantics to 1e-5 on CPU, cached decode
-#     across the sliding window included. Converted by ../convert-kolibri.py.
-#   - Install: uv pip install "mlx-vlm==0.7.4"  (no --no-deps any more; 0.7.2
-#     declares mlx>=0.32.2, a lower bound, so the exact mlx pin survives the
-#     same resolution. Under the previous GIT pin it did not, and patch 0013
-#     fell inert when uv dropped mlx to 0.32.1.)
+# STATE 2026-10-17: verified against mlx-vlm main @ b8bf04c (reports "0.7.8")
+# and mlx 0.32.4. NINE patches: the eight of 09-29 minus 0050, plus 0036.
+# All apply to b8bf04c without fuzz or offset; the upstream test suites for
+# cache/generate/speculative/server/gated_delta/tool_streaming pass with and
+# without them (1831). Upstream touched the files of 0010/0014 (ar.py, #2525),
+# 0011 (prompt_utils.py, #2498), 0012 (server/generation.py), 0015
+# (speculative/ops/linear.py, NVFP4) and 0035 (qwen3_5/language.py, #2273,
+# #2510) -- none of it overlaps a hunk, and none of it does what a patch does.
+#   - 0050 is GONE from this directory: mlx-vlm ships kolibri1 since #2423,
+#     and this script would skip 0050 anyway (it creates files that exist).
+#     The upstream model gives bit-identical logits on our 3-bit checkpoint.
+#     The FP8 conversion and quality tools still need OUR implementation
+#     (FP8 dequant in sanitize, mlp.experts naming); it lives in ../kolibri1/
+#     and convert-kolibri.py's use_local_kolibri1() puts it in place of
+#     mlx_vlm.models.kolibri1 for those processes only.
+#   - 0036 is NEW, see below: #2273 added a per-step device sync to the
+#     single-row decode path that exact-APC warm hits run on.
+#   - Install: the PINS of ../install-prereqs.sh, mlx-vlm as a git requirement
+#     resolved together with "mlx==0.32.4". Back to a version pin with the first
+#     release that contains #2525. Measured: ../docs/upstream-2026-10-17.md.
 #   - All seven applied to a74c7de without fuzz. Expected: the tag's apc.py,
 #     apc_adapters.py, apc_coordinator.py, models/base.py, speculative/ and
 #     server/generation.py are byte-identical to main @ 548b09b, which is what
@@ -87,8 +93,13 @@
 #   that is the rollback path.
 #
 # 0013-force-fused-sdpa-head-dim-256.patch   (LOCAL, no upstream PR)
-#   STILL NEEDED on mlx 0.32.2 from PyPI: the kernels are there, but the default
-#   dispatch still does not route to them -- only force_fused=True does.
+#   STILL NEEDED on mlx 0.32.4, for qL < 1024 only. Since mlx 0.32.3 (#4416)
+#   the default dispatch runs head_dim 256 WITH an array mask through the fused
+#   NAX kernel -- but only from qL >= 1024 (probed 2026-10-17 at kL 22,747:
+#   qL 1024 fused by default, qL 1023 +964 MiB transient, qL 512 +450 MiB).
+#   On roomy (PREFILL_STEP 2048) the patch is now redundant for full chunks;
+#   it still matters for the last, shorter chunk of almost every prompt and
+#   for lean (512). Before 0.32.3 the default never routed there at all.
 #   Qwen3.8 has head_dim 256. mlx's default dispatch only permits fused full
 #   attention for head_dim 64/80/128 -- the 16 full-attn layers therefore run on
 #   the unfused graph and materialise a score transient of O(n_heads x qL x kL)
@@ -267,6 +278,27 @@
 #   Deliberately no clamping: a silently replaced token corrupts the output.
 #   CHECKED: PR #1959 does NOT have this guard -- the spot is open upstream.
 #
+# 0036-qwen35-single-row-guard-no-sync.patch   (LOCAL, no upstream PR yet)
+#   Upstream #2273 (in 0.7.8) added `int(fa_cache.offset[0].item()) >= 0` to
+#   the qwen3_5 single-row shortcut, so a still-left-padded row skips it. The
+#   check runs on EVERY decode step, and offset is advanced lazily per step, so
+#   .item() waits for the previous step's whole forward -- the decode pipeline
+#   stalls once per token. That shortcut is exactly what an exact-APC warm hit
+#   decodes through (without a drafter; see 0035).
+#   The patch answers the same question without a sync: BatchKVCache keeps
+#   offset == _idx - left_padding (update_and_fetch, prepare, finalize, trim
+#   and filter all preserve it, and so does 0035's write-back), _idx is a
+#   Python int, and left_padding only changes outside the decode step. Other
+#   cache types keep the .item() check. Checked equal to the original over 100
+#   steps with left padding 0/1/5/17, through trim and filter.
+#   MEASURED 2026-10-17, 28,035 tokens, ENABLE_SPEC_DECODE=0, APC exact:
+#     without: cold 15.80/15.84, warm 15.04/15.15 tok/s  (warm/cold 0.954)
+#     with:    cold 15.97/16.06, warm 16.01/16.05 tok/s  (warm/cold 1.001)
+#   Greedy output unchanged. Rollback: delete the file and reinstall mlx-vlm.
+#   STACKED ON 0035: its first hunk anchors on _borrow_singleton_kv_cache,
+#   which 0035 adds. When 0035 leaves (#2336 merged, or #2356 instead),
+#   reanchor 0036 -- this script then reports CONFLICT, not silence.
+#
 # ── FOREIGN UPSTREAM PRs (cherry-picked) ─────────────────────────────────────
 # Other people's bugfixes that are still open upstream. As soon as they are
 # merged, this script reports "CONFLICT" -- remove them then, which is exactly
@@ -359,6 +391,14 @@
 #   docs/issue-2210-comment-draft.md.
 #
 # ── DONE / OBSOLETE ──────────────────────────────────────────────────────────
+#
+# 0050-kolibri1-model.patch   REMOVED 2026-10-17 with the move to main @
+#   b8bf04c. Added mlx_vlm/models/kolibri1/ (Aleph-Alpha/Kolibri-1), ported
+#   from aleph_alpha_inference/kolibri1.py and matched to an independent numpy
+#   forward to 1e-5. Upstream #2423 (merged 2026-10-06) ships its own; on our
+#   3-bit checkpoint both give bit-identical logits (three prompts, re-checked
+#   on mlx 0.32.4). The implementation itself moved to ../kolibri1/, because
+#   the conversion and quality tools need its FP8 dequant and parameter names.
 #
 # 0033-pr2072-apc-ownership-transfer-peaks.patch   REMOVED 2026-09-17 with the
 #   move to main @ 548b09b. Carried PR #2072 ("Reduce exact APC ownership-
@@ -566,7 +606,7 @@ for p in "${patches[@]}"; do
       ;;
     revert)
       if [[ $applied == 1 ]]; then
-        patch -R -p1 -d "$SITE_PACKAGES" < "$p" >/dev/null
+        patch -R -p1 -V none -d "$SITE_PACKAGES" < "$p" >/dev/null
         echo "  reverted: $name"
       else
         echo "  not applied, skipped: $name"
@@ -594,7 +634,10 @@ for p in "${patches[@]}"; do
     continue
   fi
 
-  patch -p1 -d "$SITE_PACKAGES" < "$p" >/dev/null
+  # -V none: macOS patch otherwise leaves a .orig next to every file it
+  # touches, and they pile up in site-packages across upgrades (14 found on
+  # 2026-10-17, some for patches long gone).
+  patch -p1 -V none -d "$SITE_PACKAGES" < "$p" >/dev/null
   echo "  applied: $name"
 done
 

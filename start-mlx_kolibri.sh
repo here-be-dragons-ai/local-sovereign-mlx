@@ -6,7 +6,8 @@
 # Checkpoint: Kolibri-1-MLX-3bit, made by convert-kolibri.py from the FP8
 # release -- routed experts 3 bit, attention / shared expert / embedding /
 # lm_head 6 bit, router bf16. 3.61 bits per weight, 32.8 GiB active after load.
-# Needs patch 0050 (mlx_vlm/models/kolibri1) until upstream carries the model.
+# Served by mlx-vlm's own kolibri1 (upstream #2423, in the pinned main @
+# b8bf04c); logits bit-identical to the former patch 0050 on this checkpoint.
 #
 # ── MEMORY ──────────────────────────────────────────────────────────────────
 #   weights        32.8 GiB
@@ -38,8 +39,8 @@
 #   in one turn, tool-result round trip, streaming. Unprompted, the model
 #   prefers one call per turn over parallel calls.
 #
-# Prerequisites: install-prereqs.sh has run, patches/apply-patches.sh has
-# applied 0050, the checkpoint exists (install-prereqs.sh --model kolibri
+# Prerequisites: install-prereqs.sh has run (mlx-vlm with kolibri1), the
+# checkpoint exists (install-prereqs.sh --model kolibri
 # downloads it; convert-kolibri.py rebuilds it from the FP8 release).
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -95,8 +96,8 @@ APC_MIN_FREE_RAM_GB="${APC_MIN_FREE_RAM_GB:-3.0}"
   exit 1
 }
 "$VENV_PY" -c "import mlx_vlm.models.kolibri1" 2>/dev/null || {
-  echo "ERROR: mlx_vlm has no kolibri1 model -- patch 0050 missing." >&2
-  echo "       MLX_VENV_PY=$VENV_PY ./patches/apply-patches.sh" >&2
+  echo "ERROR: mlx_vlm has no kolibri1 model -- older than upstream #2423." >&2
+  echo "       ./install-prereqs.sh   (pins an mlx-vlm that ships it)" >&2
   exit 1
 }
 
