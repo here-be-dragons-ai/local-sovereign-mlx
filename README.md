@@ -88,9 +88,17 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
 **Pinned, verified state (2026-10-17):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
-**`mlx-vlm` main @ `b8bf04c`** (reports `0.7.8`), `transformers 5.15.1`,
+**`mlx-vlm` @ `1381242`** (reports `0.7.8`), `transformers 5.15.1`,
 `numpy 2.5.2`, `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
+> `1381242` is upstream main @ `b8bf04c` plus the three Apertus 1.5 commits,
+> branch `apertus1p5-on-b8bf04c` of our fork
+> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-b8bf04c).
+> They touch only `models/apertus1p5/`, the `apertus` tool parser and one line
+> each in four shared files, so the Qwen3.8 and Kolibri path is upstream's
+> (greedy output identical to plain `b8bf04c`), and one venv serves all four
+> models. Back to upstream when Apertus 1.5 lands there.
+>
 > **Why a commit and not the `0.7.8` release.** Three fixes on this setup's
 > path landed after the tag: **`#2525`** (a finished speculative batch kept
 > its whole prompt cache resident through the next prefill -- peak with
@@ -102,13 +110,13 @@ Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 >
 > ```sh
 > uv pip install --python ~/src/mlx/.venv/bin/python "mlx==0.32.4" \
->   "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@b8bf04c6dd7f3bd3a2a5033bbfecef6375c3bfb0"
+>   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@138124233993aecca39a0d23fccf594f02d98cf1"
 > ```
 >
 > Install both in **one** resolution (`install-prereqs.sh` does): a separate
 > git install lets uv reconsider `mlx`. And read the version with its origin:
 > the commit reports `0.7.8` exactly like the tag, so `install-prereqs.sh
-> --check` and the start banner append `(git b8bf04c)` -- a bare `0.7.8` is
+> --check` and the start banner append `(git 1381242)` -- a bare `0.7.8` is
 > the tag, not the pin. Measured: [docs/upstream-2026-10-17.md](docs/upstream-2026-10-17.md).
 >
 > **`0.7.1` stays the one release this setup cannot run.** It carries the APC
@@ -422,8 +430,13 @@ prompt.
 multilingual models of the Swiss AI Initiative (ETH Zurich, EPFL, CSCS),
 Apache 2.0 plus the Apertus Acceptable Use Policy, gated on Hugging Face. The
 8B reads images and audio as discrete tokens. mlx-vlm does not carry Apertus
-1.5 yet; both start scripts run their own venv with the `apertus1p5` branch of
-[here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5).
+1.5 yet (`#1847` waits for `transformers#47662`); the shared venv installs our
+fork's branch `apertus1p5-on-b8bf04c`, so the start scripts need no venv of
+their own since 2026-10-17. The builds below were made, and are reproduced
+byte for byte, with `apertus1p5` @ `ec86ea21` on `mlx 0.32.3` -- point
+`MLX_VENV_PY` at such a venv (here `~/src/mlx/.venv-apertus`) for
+`verify-build.py`. On `mlx 0.32.4` image and audio codes and long-text logits
+are unchanged; greedy text can part on exact bf16 ties.
 
 | build | recipe | quality against the original |
 |---|---|---|

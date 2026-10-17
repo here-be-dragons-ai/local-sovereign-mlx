@@ -81,6 +81,16 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 # Move back to a plain version pin with the first release that contains
 # #2525. Measured: docs/upstream-2026-10-17.md.
 #
+# Same day, later: the commit is 1381242 on OUR fork, branch
+# apertus1p5-on-b8bf04c = upstream b8bf04c + the three Apertus 1.5 commits
+# (models/apertus1p5, the apertus tool parser, one line each in
+# models/apertus, prompt_utils, utils, tools/registry). Nothing on the Qwen3.8
+# or Kolibri path differs from b8bf04c, all patches apply to it, and the
+# Apertus start scripts no longer need a venv of their own. Back to upstream
+# once Apertus 1.5 lands there (#1847, waiting for transformers#47662).
+# ~/src/mlx/.venv-apertus (mlx 0.32.3, apertus1p5 @ ec86ea21) stays: the
+# published Apertus builds are reproduced bit for bit in exactly that state.
+#
 # 0.7.4 (2026-09-28, tagged at 0009367) over 0.7.3: on this setup's path #2357
 # (Qwen3.5 left padding), #2358 (sampler clamp / top-p) and the tool-call fixes
 # #2344/#2365/#2369. No dependency changes; all eight patches apply without
@@ -151,7 +161,7 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 PINS=(
   "mlx==0.32.4"
   "mlx-lm==0.31.3"
-  "mlx-vlm @ git+https://github.com/Blaizzy/mlx-vlm@b8bf04c6dd7f3bd3a2a5033bbfecef6375c3bfb0"
+  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@138124233993aecca39a0d23fccf594f02d98cf1"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
@@ -299,7 +309,7 @@ def origin(pkg):
     reported "0.7.1", the SAME string as the PyPI 0.7.1 tag that loses exact
     APC after the first short prompt (#2259), and main @ b8bf04c reports
     "0.7.8" like the tag without #2525. Since 2026-10-17 mlx-vlm SHOULD show
-    "<- git b8bf04c"; a plain "0.7.8" without it is the tag, not the pin.
+    "<- git 1381242"; a plain "0.7.8" without it is the tag, not the pin.
     """
     try:
         dist = m.distribution(pkg)

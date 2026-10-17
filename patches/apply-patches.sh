@@ -13,7 +13,8 @@
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
 # STATE 2026-10-17: verified against mlx-vlm main @ b8bf04c (reports "0.7.8")
-# and mlx 0.32.4. NINE patches: the eight of 09-29 minus 0050, plus 0036.
+# and mlx 0.32.4. Installed is 1381242 = b8bf04c + the Apertus 1.5 commits
+# (our fork); the patches apply to it identically. NINE patches: the eight of 09-29 minus 0050, plus 0036.
 # All apply to b8bf04c without fuzz or offset; the upstream test suites for
 # cache/generate/speculative/server/gated_delta/tool_streaming pass with and
 # without them (1831). Upstream touched the files of 0010/0014 (ar.py, #2525),

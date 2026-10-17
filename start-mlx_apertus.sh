@@ -7,9 +7,14 @@
 # swiss-ai/Apertus-v1.5-8B release with the apertus1p5 branch of mlx-vlm:
 # language model 8 bit affine (group size 64), vision tokenizer (EMU3.5/IBQ)
 # and audio tokenizer (WavTokenizer) kept in float32. 9.4 GB on disk.
-# The model lives only on that branch (here-be-dragons-ai/mlx-vlm#1), so this
-# script runs its own venv with an editable install of the worktree; the
-# shared venv of the Qwen3.8 / Kolibri servers stays untouched.
+# The model is not upstream yet (#1847 waits for transformers#47662). Since
+# 2026-10-17 it runs from the SHARED venv, which installs our fork's branch
+# apertus1p5-on-b8bf04c (upstream main @ b8bf04c + the Apertus commits) --
+# see install-prereqs.sh. The local patches are in that venv too; on this
+# model they are inert (0013 is head_dim 256 only, 0015/0010 need the
+# QWEN38_* switches the Qwen start script sets). MLX_VENV_PY points at
+# another venv, e.g. ~/src/mlx/.venv-apertus, which reproduces the
+# published builds (mlx 0.32.3, apertus1p5 @ ec86ea21).
 #
 # ── MEMORY ──────────────────────────────────────────────────────────────────
 #   weights        ~9.4 GiB
@@ -44,8 +49,7 @@
 set -euo pipefail
 
 # ── Paths (all overridable via env) ──────────────────────────────────────────
-VENV_PY="${MLX_VENV_PY:-$HOME/src/mlx/.venv-apertus/bin/python}"
-MLX_VLM_SRC="${MLX_VLM_SRC:-$HOME/src/mlx-vlm-apertus}"
+VENV_PY="${MLX_VENV_PY:-$HOME/src/mlx/.venv/bin/python}"
 MODELS_ROOT="${MLX_MODELS:-$HOME/src/mlx/models}"
 HF_DIR="${HF_DIR:-$MODELS_ROOT/Apertus-v1.5-8B}"
 MODEL_DIR="${MODEL_DIR:-$MODELS_ROOT/Apertus-v1.5-8B-MLX-8bit-omni}"
@@ -75,14 +79,12 @@ APC_MIN_FREE_RAM_GB="${APC_MIN_FREE_RAM_GB:-3.0}"
 
 # ── Checks ───────────────────────────────────────────────────────────────────
 [[ -x "$VENV_PY" ]] || {
-  echo "ERROR: no venv python at $VENV_PY" >&2
-  echo "       uv venv --python 3.12 ${VENV_PY:h:h}" >&2
-  echo "       VIRTUAL_ENV=${VENV_PY:h:h} uv pip install -e $MLX_VLM_SRC" >&2
+  echo "ERROR: no venv python at $VENV_PY -- run ./install-prereqs.sh" >&2
   exit 1
 }
 "$VENV_PY" -c "import mlx_vlm.models.apertus1p5.audio" 2>/dev/null || {
   echo "ERROR: mlx_vlm in $VENV_PY has no apertus1p5 with audio." >&2
-  echo "       Install the apertus1p5 branch: VIRTUAL_ENV=${VENV_PY:h:h} uv pip install -e $MLX_VLM_SRC" >&2
+  echo "       ./install-prereqs.sh pins the fork branch that carries it." >&2
   exit 1
 }
 [[ -f "$MODEL_DIR/config.json" ]] || {
@@ -113,9 +115,17 @@ mkdir -p "${LOG_FILE:h}"
 ln -sfn "$MODEL_DIR" "$MODELS_ROOT/$MODEL_ALIAS"
 
 MLX_VER=$("$VENV_PY" -c "import importlib.metadata as m;print(m.version('mlx'))" 2>/dev/null || echo "?")
-VLM_REV=$(git -C "$MLX_VLM_SRC" rev-parse --short HEAD 2>/dev/null || echo "?")
+# Which code runs: a git install records its commit, an editable install its
+# worktree (then ask git there).
+VLM_REV=$("$VENV_PY" -c "
+import importlib.metadata as m, json, subprocess
+d = m.distribution('mlx-vlm'); raw = d.read_text('direct_url.json') or '{}'
+u = json.loads(raw); rev = (u.get('vcs_info') or {}).get('commit_id', '')
+if not rev and u.get('url', '').startswith('file://'):
+    rev = subprocess.run(['git', '-C', u['url'][7:], 'rev-parse', 'HEAD'], capture_output=True, text=True).stdout.strip()
+print(f\"{d.version} @ {rev[:8] or '?'}\")" 2>/dev/null || echo "?")
 
-echo "Apertus 1.5 ($MODEL_ALIAS) · mlx-vlm apertus1p5@$VLM_REV · mlx $MLX_VER"
+echo "Apertus 1.5 ($MODEL_ALIAS) · mlx-vlm $VLM_REV · mlx $MLX_VER"
 echo "  model   : $MODEL_ALIAS -> $MODEL_DIR"
 echo "  server  : http://$BIND_HOST:$PORT/v1   (log: $LOG_FILE)"
 echo "  wired   : ${_WIRED_MB} MB · prefill step $PREFILL_STEP · seqs $MAX_NUM_SEQS · KV ${KV_BITS:-f16}"
