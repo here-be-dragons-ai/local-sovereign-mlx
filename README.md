@@ -88,36 +88,37 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
 **Pinned, verified state (2026-10-17):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
-**`mlx-vlm` @ `1381242`** (reports `0.7.8`), `transformers 5.15.1`,
+**`mlx-vlm` 0.7.9 + Apertus 1.5, @ `60d4005`** (reports `0.7.9`), `transformers 5.15.1`,
 `numpy 2.5.2`, `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
-> `1381242` is upstream main @ `b8bf04c` plus the three Apertus 1.5 commits,
-> branch `apertus1p5-on-b8bf04c` of our fork
-> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-b8bf04c).
+> `60d4005` is the **`v0.7.9` release** plus the three Apertus 1.5 commits,
+> branch `apertus1p5-on-v0.7.9` of our fork
+> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.7.9).
 > They touch only `models/apertus1p5/`, the `apertus` tool parser and one line
-> each in four shared files, so the Qwen3.8 and Kolibri path is upstream's
-> (greedy output identical to plain `b8bf04c`), and one venv serves all four
-> models. Back to upstream when Apertus 1.5 lands there.
+> each in four shared files, so the Qwen3.8 and Kolibri path is the release's
+> (greedy output identical), and one venv serves all four models. A plain
+> `mlx-vlm==0.7.9` runs everything but Apertus 1.5. Back to the plain release
+> when Apertus 1.5 lands upstream.
 >
-> **Why a commit and not the `0.7.8` release.** Three fixes on this setup's
-> path landed after the tag: **`#2525`** (a finished speculative batch kept
+> **History: 2026-10-17 to 10-20 the pin was main @ `b8bf04c`**, because Three fixes on this setup's
+> path landed after the `0.7.8` tag: **`#2525`** (a finished speculative batch kept
 > its whole prompt cache resident through the next prefill -- peak with
 > DFlash 2 at 28k tokens 27.4 -> 25.5 GiB here), **`#2510`** (Qwen3.5 ragged
 > decode copied the KV cache every step) and **`#2527`** (bf16 parity of the
 > fused quantized projections under `mlx 0.32.4`; with the tag, `mlx 0.32.4`
-> fails 111 upstream tests). main requires `mlx>=0.32.4`. The pin returns to a
-> plain version with the first release that contains `#2525`.
+> fails 111 upstream tests). `0.7.9` (2026-10-19) contains all three and
+> requires `mlx>=0.32.4`.
 >
 > ```sh
 > uv pip install --python ~/src/mlx/.venv/bin/python "mlx==0.32.4" \
->   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@138124233993aecca39a0d23fccf594f02d98cf1"
+>   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@60d4005a53855a2db52d1d0acabefbb59f9b1f60"
 > ```
 >
 > Install both in **one** resolution (`install-prereqs.sh` does): a separate
 > git install lets uv reconsider `mlx`. And read the version with its origin:
-> the commit reports `0.7.8` exactly like the tag, so `install-prereqs.sh
-> --check` and the start banner append `(git 1381242)` -- a bare `0.7.8` is
-> the tag, not the pin. Measured: [docs/upstream-2026-10-17.md](docs/upstream-2026-10-17.md).
+> the commit reports `0.7.9` exactly like the tag, so `install-prereqs.sh
+> --check` and the start banner append `(git 60d4005)` -- a bare `0.7.9` is
+> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-10-17.md](docs/upstream-2026-10-17.md).
 >
 > **`0.7.1` stays the one release this setup cannot run.** It carries the APC
 > redesign `#2182` without its fix `#2262` (upstream issue **`#2259`**): one
@@ -431,7 +432,7 @@ multilingual models of the Swiss AI Initiative (ETH Zurich, EPFL, CSCS),
 Apache 2.0 plus the Apertus Acceptable Use Policy, gated on Hugging Face. The
 8B reads images and audio as discrete tokens. mlx-vlm does not carry Apertus
 1.5 yet (`#1847` waits for `transformers#47662`); the shared venv installs our
-fork's branch `apertus1p5-on-b8bf04c`, so the start scripts need no venv of
+fork's branch `apertus1p5-on-v0.7.9`, so the start scripts need no venv of
 their own since 2026-10-17. The builds below were made, and are reproduced
 byte for byte, with `apertus1p5` @ `ec86ea21` on `mlx 0.32.3` -- point
 `MLX_VENV_PY` at such a venv (here `~/src/mlx/.venv-apertus`) for
@@ -472,6 +473,16 @@ Eight are **local work** for Qwen3.8-27B. One is a cherry-picked foreign PR:
 `0035` is upstream `#2336` and fixes `#2210` (see below). It comes out when
 upstream merges it -- `apply-patches.sh` reports `CONFLICT` then. `0036` is
 stacked on it.
+
+What changed on 2026-10-20, moving to the `0.7.9` release (+ Apertus 1.5):
+
+- **Nothing in the patch set.** All nine apply without fuzz; upstream suites
+  pass with and without them. `0.7.9` over `b8bf04c` is `#2545` (sampling
+  defaults from `generation_config` in the Python API) and `#2548`
+  (`RotatingKVCache` after the buffer wraps). Kolibri's 513-token sliding
+  window wraps on every longer prompt: re-checked at 2,000 tokens in chunks,
+  bit-identical to `b8bf04c`. Qwen3.8 greedy output unchanged.
+  Details in [docs/upstream-2026-10-20.md](docs/upstream-2026-10-20.md).
 
 What changed on 2026-10-17, moving to main @ `b8bf04c` with `mlx 0.32.4`:
 

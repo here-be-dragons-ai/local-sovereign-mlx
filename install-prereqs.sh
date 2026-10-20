@@ -56,7 +56,26 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 [[ "$WANT_MODEL" == kolibri ]] || WANT_QWEN=1
 [[ "$WANT_MODEL" == qwen ]]    || WANT_KOLIBRI=1
 
-# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-10-17).
+# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-10-20).
+#
+# 2026-10-20: the RELEASE is back. mlx-vlm 0.7.9 (tagged 2026-10-19 at
+# 9527f2d) is b8bf04c + #2545 + #2548 and carries #2525/#2510/#2527. The pin
+# is 60d4005 on our fork, branch apertus1p5-on-v0.7.9 = the v0.7.9 tag + the
+# same three Apertus 1.5 commits; everything outside models/apertus1p5 and
+# four one-line additions is the release. Reports "0.7.9" like the tag, so the
+# "<- git 60d4005" suffix below is what tells the two apart. A plain
+# "mlx-vlm==0.7.9" works for Qwen3.8 and Kolibri but has no Apertus 1.5.
+#   #2545  CLI/Python generate() take temperature/top_p/top_k from the
+#          checkpoint's generation_config when the caller passes none (they
+#          decoded greedily before). Our tools pass them explicitly; new
+#          scripts that want greedy must say temperature=0.
+#   #2548  RotatingKVCache chunked prefill and positions after the buffer
+#          wraps. Kolibri's sliding window is 513, so every longer prompt
+#          wraps: re-checked at 2,000 tokens in 512-token chunks, logits and
+#          16 decode tokens bit-identical to b8bf04c, upstream and our
+#          kolibri1/ alike. BatchKVCache (0036's invariant) is untouched.
+# All nine patches apply without fuzz; upstream suites 2594 passed with and
+# without them. Qwen3.8 greedy hash unchanged. docs/upstream-2026-10-20.md.
 #
 # 2026-10-17: mlx-vlm is on a GIT COMMIT again, main @ b8bf04c (reports
 # "0.7.8", the same string as the 0.7.8 tag, which lacks the three PRs below).
@@ -79,7 +98,7 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 # The git requirement sits INSIDE PINS together with the exact mlx pin, so uv
 # resolves both at once and cannot slide mlx down (the 09-17 --no-deps trap).
 # Move back to a plain version pin with the first release that contains
-# #2525. Measured: docs/upstream-2026-10-17.md.
+# #2525 (done 2026-10-20, see above). Measured: docs/upstream-2026-10-17.md.
 #
 # Same day, later: the commit is 1381242 on OUR fork, branch
 # apertus1p5-on-b8bf04c = upstream b8bf04c + the three Apertus 1.5 commits
@@ -161,7 +180,7 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 PINS=(
   "mlx==0.32.4"
   "mlx-lm==0.31.3"
-  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@138124233993aecca39a0d23fccf594f02d98cf1"
+  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@60d4005a53855a2db52d1d0acabefbb59f9b1f60"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
@@ -307,9 +326,9 @@ def origin(pkg):
 
     A git install is invisible in the version string: main @ 548b09b
     reported "0.7.1", the SAME string as the PyPI 0.7.1 tag that loses exact
-    APC after the first short prompt (#2259), and main @ b8bf04c reports
-    "0.7.8" like the tag without #2525. Since 2026-10-17 mlx-vlm SHOULD show
-    "<- git 1381242"; a plain "0.7.8" without it is the tag, not the pin.
+    APC after the first short prompt (#2259), and our 60d4005 reports
+    "0.7.9" like the tag, which has no Apertus 1.5. Since 2026-10-20 mlx-vlm
+    SHOULD show "<- git 60d4005"; a plain "0.7.9" is the tag, not the pin.
     """
     try:
         dist = m.distribution(pkg)

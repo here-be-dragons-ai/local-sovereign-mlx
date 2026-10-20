@@ -12,9 +12,16 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
+# STATE 2026-10-20: verified against mlx-vlm 0.7.9 (tag 9527f2d) and mlx
+# 0.32.4; installed is 60d4005 = v0.7.9 + the Apertus 1.5 commits (our fork).
+# All nine apply without fuzz. 0.7.9 over b8bf04c is #2545 and #2548; #2548
+# touches models/base.py (0013), qwen3_5/language.py (0035/0036) and the
+# RotatingKVCache mask, none of it inside a hunk; BatchKVCache, which 0036
+# reasons about, is unchanged. Upstream suites 2594 passed with and without.
+# The 2026-10-17 notes below (b8bf04c) still describe every patch.
+#
 # STATE 2026-10-17: verified against mlx-vlm main @ b8bf04c (reports "0.7.8")
-# and mlx 0.32.4. Installed is 1381242 = b8bf04c + the Apertus 1.5 commits
-# (our fork); the patches apply to it identically. NINE patches: the eight of 09-29 minus 0050, plus 0036.
+# and mlx 0.32.4. NINE patches: the eight of 09-29 minus 0050, plus 0036.
 # All apply to b8bf04c without fuzz or offset; the upstream test suites for
 # cache/generate/speculative/server/gated_delta/tool_streaming pass with and
 # without them (1831). Upstream touched the files of 0010/0014 (ar.py, #2525),
