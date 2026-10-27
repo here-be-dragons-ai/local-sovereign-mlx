@@ -439,9 +439,12 @@ byte for byte, with `apertus1p5` @ `ec86ea21` on `mlx 0.32.3` -- point
 `verify-build.py`. On `mlx 0.32.4` image and audio codes and long-text logits
 are unchanged; greedy text can part on exact bf16 ties.
 
+Both builds are private until swiss-ai decides how converted Apertus 1.5 weights
+may be shared under the AUP; until then, convert locally from the gated release.
+
 | build | recipe | quality against the original |
 |---|---|---|
-| [`Apertus-v1.5-8B-MLX-8bit`](https://huggingface.co/here-be-dragons-ai/Apertus-v1.5-8B-MLX-8bit) | 8 bit, image and audio tokenizers in float32 | mean KL 0.002 on every text set (3–7× the noise floor); MMLU 5-shot 66.9% like bf16, equivalent within ±1 point; same 32 greedy tokens as bf16 on 64% of 300 prompts |
+| `Apertus-v1.5-8B-MLX-8bit` (private) | 8 bit, image and audio tokenizers in float32 | mean KL 0.002 on every text set (3–7× the noise floor); MMLU 5-shot 66.9% like bf16, equivalent within ±1 point; same 32 greedy tokens as bf16 on 64% of 300 prompts |
 | `Apertus-v1.5-70B-MLX-3bit` (private) | text only, decoder 3 bit with AWQ scales, embedding and head 6 bit (`awq-apertus-scales.py`, `convert-apertus-3bit.py`) | not measured against bf16 yet |
 
 Plain round-to-nearest 3 bit breaks Apertus (`up_proj` in front of the xIELU
