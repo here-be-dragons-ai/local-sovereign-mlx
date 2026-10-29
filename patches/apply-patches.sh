@@ -12,6 +12,17 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
+# STATE 2026-10-29: verified against mlx-vlm 0.7.11 (tag 527c513) and mlx
+# 0.32.4; installed is a5cfdcf = v0.7.11 + the Apertus 1.5 commits (our fork).
+# SEVEN patches: 0035 and 0036 are GONE, see the DONE section. 08d552a2 (in
+# 0.7.11) adds `h.shape[1] > 1` to the qwen3_5 single-row shortcut, so decode
+# no longer enters it: 0035's borrow (decode-only) became dead code and 0036
+# no longer applies. The other seven apply without fuzz; upstream suites 2965
+# passed with and without them. Upstream touched the files of 0010/0014
+# (ar.py, apc.py: hybrid checkpoints at observed divergences, #2617), 0011
+# (prompt_utils.py) and 0012 (server/generation.py, #2602) -- no hunk overlap.
+# ../docs/upstream-2026-10-29.md.
+#
 # STATE 2026-10-20: verified against mlx-vlm 0.7.9 (tag 9527f2d) and mlx
 # 0.32.4; installed is 60d4005 = v0.7.9 + the Apertus 1.5 commits (our fork).
 # All nine apply without fuzz. 0.7.9 over b8bf04c is #2545 and #2548; #2548
@@ -35,7 +46,7 @@
 #     (FP8 dequant in sanitize, mlp.experts naming); it lives in ../kolibri1/
 #     and convert-kolibri.py's use_local_kolibri1() puts it in place of
 #     mlx_vlm.models.kolibri1 for those processes only.
-#   - 0036 is NEW, see below: #2273 added a per-step device sync to the
+#   - 0036 is NEW (gone 10-29, see DONE): #2273 added a per-step sync to the
 #     single-row decode path that exact-APC warm hits run on.
 #   - Install: the PINS of ../install-prereqs.sh, mlx-vlm as a git requirement
 #     resolved together with "mlx==0.32.4". Back to a version pin with the first
@@ -286,54 +297,11 @@
 #   Deliberately no clamping: a silently replaced token corrupts the output.
 #   CHECKED: PR #1959 does NOT have this guard -- the spot is open upstream.
 #
-# 0036-qwen35-single-row-guard-no-sync.patch   (LOCAL, no upstream PR yet)
-#   Upstream #2273 (in 0.7.8) added `int(fa_cache.offset[0].item()) >= 0` to
-#   the qwen3_5 single-row shortcut, so a still-left-padded row skips it. The
-#   check runs on EVERY decode step, and offset is advanced lazily per step, so
-#   .item() waits for the previous step's whole forward -- the decode pipeline
-#   stalls once per token. That shortcut is exactly what an exact-APC warm hit
-#   decodes through (without a drafter; see 0035).
-#   The patch answers the same question without a sync: BatchKVCache keeps
-#   offset == _idx - left_padding (update_and_fetch, prepare, finalize, trim
-#   and filter all preserve it, and so does 0035's write-back), _idx is a
-#   Python int, and left_padding only changes outside the decode step. Other
-#   cache types keep the .item() check. Checked equal to the original over 100
-#   steps with left padding 0/1/5/17, through trim and filter.
-#   MEASURED 2026-10-17, 28,035 tokens, ENABLE_SPEC_DECODE=0, APC exact:
-#     without: cold 15.80/15.84, warm 15.04/15.15 tok/s  (warm/cold 0.954)
-#     with:    cold 15.97/16.06, warm 16.01/16.05 tok/s  (warm/cold 1.001)
-#   Greedy output unchanged. Rollback: delete the file and reinstall mlx-vlm.
-#   STACKED ON 0035: its first hunk anchors on _borrow_singleton_kv_cache,
-#   which 0035 adds. When 0035 leaves (#2336 merged, or #2356 instead),
-#   reanchor 0036 -- this script then reports CONFLICT, not silence.
-#
 # ── FOREIGN UPSTREAM PRs (cherry-picked) ─────────────────────────────────────
 # Other people's bugfixes that are still open upstream. As soon as they are
 # merged, this script reports "CONFLICT" -- remove them then, which is exactly
 # what happened to 0031 and 0034 with the 0.7.0 release, and to 0033 on
 # 2026-09-17.
-# 0035-pr2336-qwen35-singleton-kv-borrow.patch   (PR #2336, @samfenwick, open)
-#   Fixes #2210. qwen3_5/language.py's single-row shortcut ran extract() +
-#   merge() on every full-attention BatchKVCache per decode token, i.e. copied
-#   the whole KV prefix (three times over: extract is exactly sized, so the
-#   next update_and_fetch reallocates). The PR borrows keys/values of an
-#   unpadded one-row BatchKVCache for single-token decode and writes them back.
-#   Only reached WITHOUT a drafter: DFlash/MTP verify passes carry
-#   capture_layer_ids, so hidden_sink is set and the shortcut is skipped.
-#   MEASURED 2026-09-24, 26,690 tokens, ENABLE_SPEC_DECODE=0, APC exact:
-#     warm/cold decode 0.658 -> 0.998 (warm 10.4-10.6 -> 16.0-16.1 tok/s),
-#     warm mem_sum 26.8-30.8 -> 20.6 GiB; cold unchanged; greedy output
-#     bit-identical with and without.
-#   Carried because it makes ENABLE_SPEC_DECODE=0 (rollback, and the only way
-#   to use response_format / thinking_budget) usable at long context.
-#   Test files of the PR are stripped (tests are not installed).
-#   Remove when upstream merges it -- OR when #2356 lands instead: that PR
-#   fixes the same exact-hit case one level up (APCCoordinator.merge_rows
-#   returns a lone restored row's own cache, so the shortcut is never
-#   entered). Measured 2026-09-25 on 0.7.3, #2356 alone: warm/cold 1.001, same
-#   as 0035. 0035 is kept over it because it also covers a batch that SHRINKS
-#   to one row, which #2356 does not.
-#
 # 0030-pr1956-speculative-quantized-kv.patch   (PR #1956, @Codcore, open)
 #   "Fix speculative decoding against a quantized KV cache".
 #   REPRODUCED HERE: with KV_BITS=8 and MAX_NUM_SEQS=2, two parallel requests die
@@ -399,6 +367,26 @@
 #   docs/issue-2210-comment-draft.md.
 #
 # ── DONE / OBSOLETE ──────────────────────────────────────────────────────────
+#
+# 0035-pr2336-qwen35-singleton-kv-borrow.patch and
+# 0036-qwen35-single-row-guard-no-sync.patch   REMOVED 2026-10-29 with the
+#   move to 0.7.11. 0035 carried PR #2336 (fixes #2210: the qwen3_5 single-row
+#   shortcut copied the whole KV prefix per decode token without a drafter;
+#   warm/cold 0.658 -> 0.998 on 09-24). 0036 removed the per-step .item() sync
+#   #2273 put into that shortcut (warm/cold 0.954 -> 1.001 on 10-17).
+#   Upstream 08d552a2 ("Reuse single-row decode caches", in 0.7.11) keeps
+#   decode out of the shortcut altogether (`h.shape[1] > 1`): the batch cache
+#   decodes in place and keeps its buffers. 0035 still applied but borrowed
+#   only at h.shape[1] == 1, i.e. never; 0036's second hunk no longer applied.
+#   MEASURED 2026-10-29, 28,035 tokens, ENABLE_SPEC_DECODE=0, APC exact, AC:
+#     0.7.11 as released:          cold 15.32/15.48, warm 14.86/14.90 (0.966)
+#     0.7.11, guard removed, +0035/0036: cold 15.32/15.49, warm 15.57/15.69 (1.015)
+#   So the patches still buy ~5% warm decode, but only by undoing 08d552a2,
+#   and that breaks its new test test_qwen3_5_single_row_decode_retains_batch_
+#   cache (6 cases: logits equal, but the cache objects are replaced per step,
+#   which the 0.7.11 compaction/checkpoint code may rely on). Accepted the 3.5%
+#   instead. REVISIT IF: a fix keeps the cache owners AND the warm rate -- the
+#   remaining gap is in the batch decode path, not in the shortcut.
 #
 # 0050-kolibri1-model.patch   REMOVED 2026-10-17 with the move to main @
 #   b8bf04c. Added mlx_vlm/models/kolibri1/ (Aleph-Alpha/Kolibri-1), ported

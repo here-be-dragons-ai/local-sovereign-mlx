@@ -354,8 +354,9 @@ def main():
         else:
             print(
                 "  #2210 does NOT reproduce here: warm and cold decode within 10% "
-                "of each other.\n  Either patch 0035 (upstream #2336) is applied, or "
-                "this configuration never takes that path (a drafter skips it)."
+                "of each other.\n  Either the stack keeps single-token decode out of "
+                "the copying shortcut (0.7.11, or the retired patch 0035), or a "
+                "drafter skips it."
             )
     return 1 if broken else 0
 

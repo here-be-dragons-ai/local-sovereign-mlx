@@ -87,18 +87,19 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
 
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
-**Pinned, verified state (2026-10-17):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
-**`mlx-vlm` 0.7.9 + Apertus 1.5, @ `60d4005`** (reports `0.7.9`), `transformers 5.15.1`,
+**Pinned, verified state (2026-10-29):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
+**`mlx-vlm` 0.7.11 + Apertus 1.5, @ `a5cfdcf`** (reports `0.7.11`), `transformers 5.15.1`,
 `numpy 2.5.2`, `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
-> `60d4005` is the **`v0.7.9` release** plus the three Apertus 1.5 commits,
-> branch `apertus1p5-on-v0.7.9` of our fork
-> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.7.9).
+> `a5cfdcf` is the **`v0.7.11` release** plus the three Apertus 1.5 commits,
+> branch `apertus1p5-on-v0.7.11` of our fork
+> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.7.11).
 > They touch only `models/apertus1p5/`, the `apertus` tool parser and one line
 > each in four shared files, so the Qwen3.8 and Kolibri path is the release's
 > (greedy output identical), and one venv serves all four models. A plain
-> `mlx-vlm==0.7.9` runs everything but Apertus 1.5. Back to the plain release
-> when Apertus 1.5 lands upstream.
+> `mlx-vlm==0.7.11` runs everything but Apertus 1.5. Back to the plain release
+> when Apertus 1.5 lands upstream. 10-20 to 10-29 the pin was `60d4005`
+> (`v0.7.9` + Apertus).
 >
 > **History: 2026-10-17 to 10-20 the pin was main @ `b8bf04c`**, because Three fixes on this setup's
 > path landed after the `0.7.8` tag: **`#2525`** (a finished speculative batch kept
@@ -111,14 +112,14 @@ Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 >
 > ```sh
 > uv pip install --python ~/src/mlx/.venv/bin/python "mlx==0.32.4" \
->   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@60d4005a53855a2db52d1d0acabefbb59f9b1f60"
+>   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@a5cfdcf96469f935dc13716a897b5ce431b84e32"
 > ```
 >
 > Install both in **one** resolution (`install-prereqs.sh` does): a separate
 > git install lets uv reconsider `mlx`. And read the version with its origin:
-> the commit reports `0.7.9` exactly like the tag, so `install-prereqs.sh
-> --check` and the start banner append `(git 60d4005)` -- a bare `0.7.9` is
-> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-10-17.md](docs/upstream-2026-10-17.md).
+> the commit reports `0.7.11` exactly like the tag, so `install-prereqs.sh
+> --check` and the start banner append `(git a5cfdcf)` -- a bare `0.7.11` is
+> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-10-29.md](docs/upstream-2026-10-29.md).
 >
 > **`0.7.1` stays the one release this setup cannot run.** It carries the APC
 > redesign `#2182` without its fix `#2262` (upstream issue **`#2259`**): one
@@ -203,16 +204,19 @@ A profile sets *defaults* only; individual env variables still win.
 | `MODEL_ALIAS` | `Qwen3.8-27B-local` | **must** match the model name in the request |
 | `STATE_DIR` | `~/.mlx-qwen38` | log and SSD prefix cache |
 
-> **`ENABLE_SPEC_DECODE=0` is an operating mode again since patch `0035`.**
-> Without a drafter, a warm exact-APC hit used to decode at two thirds of the
-> cold rate (upstream issue `#2210`): Qwen3.5's single-row shortcut ran
-> `extract()` + `merge()` on every full-attention cache, i.e. copied the whole
-> KV prefix on every decode token. `0035` is upstream PR `#2336`, which borrows
-> the arrays instead. Measured 2026-09-24 at 26,690 tokens, 300 decoded tokens,
-> no drafter: warm/cold **0.658 -> 0.998** (10.4-10.6 -> 16.0-16.1 tok/s), and
-> the warm-hit memory spike (26.8-30.8 GiB) is gone (20.6 GiB). Greedy output is
-> bit-identical with and without it. With the drafter nothing changes: every
-> verify pass carries `capture_layer_ids`, which skips that shortcut entirely.
+> **`ENABLE_SPEC_DECODE=0` is an operating mode** (since patch `0035` on
+> 2026-09-24, upstream itself since `0.7.11`). Without a drafter, a warm
+> exact-APC hit used to decode at two thirds of the cold rate (upstream issue
+> `#2210`): Qwen3.5's single-row shortcut ran `extract()` + `merge()` on every
+> full-attention cache, i.e. copied the whole KV prefix on every decode token.
+> `0035` (upstream PR `#2336`) borrowed the arrays instead: warm/cold
+> **0.658 -> 0.998** at 26,690 tokens. `0.7.11` (`08d552a2`) keeps decode out
+> of the shortcut altogether, and `0035`/`0036` are retired: measured
+> 2026-10-29 at 28,035 tokens, warm/cold **0.966** (cold 15.3-15.5, warm
+> 14.9 tok/s). The last ~3.5% were accepted rather than carried as a patch
+> that undoes `08d552a2` -- see [docs/upstream-2026-10-29.md](docs/upstream-2026-10-29.md).
+> With the drafter nothing changes: every verify pass carries
+> `capture_layer_ids`, which skips that shortcut entirely.
 > Instrument: `./measure-apc-warm-decode.py`.
 
 On start the script prints the computed budget of this machine. The
@@ -432,7 +436,7 @@ multilingual models of the Swiss AI Initiative (ETH Zurich, EPFL, CSCS),
 Apache 2.0 plus the Apertus Acceptable Use Policy, gated on Hugging Face. The
 8B reads images and audio as discrete tokens. mlx-vlm does not carry Apertus
 1.5 yet (`#1847` waits for `transformers#47662`); the shared venv installs our
-fork's branch `apertus1p5-on-v0.7.9`, so the start scripts need no venv of
+fork's branch `apertus1p5-on-v0.7.11`, so the start scripts need no venv of
 their own since 2026-10-17. The builds below were made, and are reproduced
 byte for byte, with `apertus1p5` @ `ec86ea21` on `mlx 0.32.3` -- point
 `MLX_VENV_PY` at such a venv (here `~/src/mlx/.venv-apertus`) for
@@ -468,14 +472,26 @@ Time to first token is still to be measured on stable mains power.
 
 ## Patches
 
-Nine patches against `site-packages`, applied by `patches/apply-patches.sh`
+Seven patches against `site-packages`, applied by `patches/apply-patches.sh`
 (idempotent, `--check` / `--revert`). **They vanish on every
 `pip install -U mlx-vlm`** -- run it again afterwards.
 
-Eight are **local work** for Qwen3.8-27B. One is a cherry-picked foreign PR:
-`0035` is upstream `#2336` and fixes `#2210` (see below). It comes out when
-upstream merges it -- `apply-patches.sh` reports `CONFLICT` then. `0036` is
-stacked on it.
+All seven are **local work** for Qwen3.8-27B; no foreign PR is carried since
+2026-10-29.
+
+What changed on 2026-10-29, moving to the `0.7.11` release (+ Apertus 1.5):
+
+- **`0035` and `0036` are gone.** `08d552a2` (in `0.7.11`) keeps single-token
+  decode out of Qwen3.5's single-row shortcut, so `0035`'s borrow never ran
+  and `0036` no longer applied. Without a drafter, warm decode is 0.966 of
+  cold (was 1.001 with both); putting them back gains ~5% warm but undoes
+  `08d552a2` and fails its new upstream test, so the 3.5% were accepted.
+- The other seven apply without fuzz; upstream suites 2965 passed with and
+  without them. Qwen3.8 greedy hash unchanged (`8b8a02630fcd`, cold and
+  warm), Apertus 1.5 8B text and tool call ok. `0.7.10`/`0.7.11` bring the
+  compaction and hybrid-checkpoint work (`#2602`, `#2612`, `#2613`, `#2617`);
+  whether the new checkpoints interact with `0010` is not measured yet.
+  Details in [docs/upstream-2026-10-29.md](docs/upstream-2026-10-29.md).
 
 What changed on 2026-10-20, moving to the `0.7.9` release (+ Apertus 1.5):
 

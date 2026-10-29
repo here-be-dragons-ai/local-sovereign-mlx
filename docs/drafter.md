@@ -166,7 +166,8 @@ drafter is what keeps decode at the cold rate: warm/cold is 1.003 with it and
 was not a neutral way to take the drafter out of a measurement — on any request
 that hit the prefix cache it also switched on a −37% decode penalty that had
 nothing to do with speculation. **Fixed by patch `0035` (upstream `#2336`) on
-2026-09-24**: warm/cold without the drafter is now 0.998. Caveat for the
+2026-09-24**: warm/cold without the drafter is now 0.998 (since 0.7.11 upstream does
+it itself and `0035` is retired: 0.966, [upstream-2026-10-29.md](upstream-2026-10-29.md)). Caveat for the
 short-prompt table above: its "no drafter" column is a median of three identical
 prompts, so repeats may have been warm hits and paid the copy. At short context
 that copy is small, but the column may read slightly low; not re-measured. Full table in

@@ -627,6 +627,12 @@ instrument, 26,690 tokens, no drafter, 0.7.2:
 That also explains the 33–35 GiB warm-arm excursions below: they were the
 per-token copies, and they go with it.
 
+**2026-10-29: `0035` retired.** `0.7.11` (`08d552a2`) keeps single-token
+decode out of the shortcut, so the batch cache decodes in place. Warm/cold
+0.965-0.968 at 28,035 tokens; decode memory warm 22.50 GiB against cold
+22.48 GiB (`--phases`, 0.5 s probe), so no warm spike either. See
+[upstream-2026-10-29.md](upstream-2026-10-29.md).
+
 **On memory this measurement says nothing usable.** Peak `sum` inside the request
 window was 23.1–25.2 GiB on the cold arms, and on the warm arms 21.5, 34.9, 33.8
 and 23.4 GiB — one high and one low sample in *both* patch arms. The spread is

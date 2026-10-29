@@ -9,7 +9,7 @@
 # and audio tokenizer (WavTokenizer) kept in float32. 9.4 GB on disk.
 # The model is not upstream yet (#1847 waits for transformers#47662). Since
 # 2026-10-17 it runs from the SHARED venv, which installs our fork's branch
-# apertus1p5-on-v0.7.9 (the v0.7.9 release + the Apertus commits) --
+# apertus1p5-on-v0.7.11 (the v0.7.11 release + the Apertus commits) --
 # see install-prereqs.sh. The local patches are in that venv too; on this
 # model they are inert (0013 is head_dim 256 only, 0015/0010 need the
 # QWEN38_* switches the Qwen start script sets). MLX_VENV_PY points at

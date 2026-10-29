@@ -582,12 +582,12 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 # ── Patch checks ──────────────────────────────────────────────────────────────
 SITE_PACKAGES=$("$VENV_PY" -c "import mlx_vlm,os;print(os.path.dirname(os.path.dirname(mlx_vlm.__file__)))")
-# The git suffix matters: since 2026-10-20 the pin is 60d4005 (the v0.7.9 tag
-# + the Apertus 1.5 commits, on our fork), which reports "0.7.9" exactly like
+# The git suffix matters: since 2026-10-29 the pin is a5cfdcf (the v0.7.11 tag
+# + the Apertus 1.5 commits, on our fork), which reports "0.7.11" exactly like
 # the tag -- and the tag has no Apertus 1.5.
 # It was the same between 09-17 and 09-21, when the 0.7.1 PyPI tag and main @
 # 548b09b both reported "0.7.1" and only one of them kept its prefix cache
-# (#2259, guard below). A banner showing "0.7.9" WITHOUT "(git 60d4005)" runs
+# (#2259, guard below). A banner showing "0.7.11" WITHOUT "(git a5cfdcf)" runs
 # the tag, not the pin.
 MLX_VLM_VER=$("$VENV_PY" -c "
 import importlib.metadata as m, json
@@ -746,17 +746,11 @@ elif [[ "$QWEN38_FUSED_LINEARS" != "0" ]]; then
   QLIN_STATUS="fused (upstream default, ~9 GiB floor)"
 fi
 
-# ── Warm single-row decode (patch 0036) ──────────────────────────────────────
-# Upstream #2273 guards qwen3_5's single-row shortcut with
-# int(fa_cache.offset[0].item()) >= 0, a device sync on every decode step. That
-# is the path an exact-APC warm hit decodes on: measured 2026-10-17 at 28k
-# tokens without a drafter, warm 15.1 t/s against cold 15.8 (0.954); with 0036
-# warm/cold is 1.00 again. Same answer, read from _idx and left_padding.
-if grep -q "int(fa_cache.offset\[0\].item()) >= 0" \
-     "$SITE_PACKAGES/mlx_vlm/models/qwen3_5/language.py" 2>/dev/null; then
-  echo "⚠️  WARNING: patch 0036 missing -- warm (APC-restored) decode syncs every" >&2
-  echo "    step, ~4-5% slower than cold. Fix: ./patches/apply-patches.sh" >&2
-fi
+# ── Warm single-row decode (patches 0035/0036, retired 2026-10-29) ──────────
+# 0.7.11 (08d552a2) keeps decode out of qwen3_5's single-row shortcut, so the
+# per-step .item() sync 0036 removed is no longer on the decode path, and
+# neither is the KV copy 0035 avoided. Without a drafter an exact-APC warm hit
+# decodes at ~0.97 of cold (28k tokens); accepted, see patches/apply-patches.sh.
 
 # With fused full attention the score transient disappears -- exactly the reason
 # roomy drops to chunk 512 without a wired limit. On top of that the NAX path

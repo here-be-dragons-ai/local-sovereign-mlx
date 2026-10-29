@@ -6,7 +6,7 @@
 # Checkpoint: Kolibri-1-MLX-3bit, made by convert-kolibri.py from the FP8
 # release -- routed experts 3 bit, attention / shared expert / embedding /
 # lm_head 6 bit, router bf16. 3.61 bits per weight, 32.8 GiB active after load.
-# Served by mlx-vlm's own kolibri1 (upstream #2423, in 0.7.9 and our pinned 60d4005); logits bit-identical to the former patch 0050 on this checkpoint.
+# Served by mlx-vlm's own kolibri1 (upstream #2423, in 0.7.11 and our pinned a5cfdcf); logits bit-identical to the former patch 0050 on this checkpoint.
 #
 # ── MEMORY ──────────────────────────────────────────────────────────────────
 #   weights        32.8 GiB

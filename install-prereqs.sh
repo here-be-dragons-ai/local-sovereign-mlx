@@ -56,7 +56,19 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 [[ "$WANT_MODEL" == kolibri ]] || WANT_QWEN=1
 [[ "$WANT_MODEL" == qwen ]]    || WANT_KOLIBRI=1
 
-# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-10-20).
+# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-10-29).
+#
+# 2026-10-29: mlx-vlm 0.7.11 (tagged 2026-10-28 at 527c513). The pin is
+# a5cfdcf on our fork, branch apertus1p5-on-v0.7.11 = the v0.7.11 tag + the
+# same three Apertus 1.5 commits (one test-only conflict in test_processors.py,
+# upstream's "atem" wire example). Reports "0.7.11" like the tag; the
+# "<- git a5cfdcf" suffix below tells the two apart. 0.7.10/0.7.11 bring the
+# compaction and hybrid-checkpoint work (#2602, #2612, #2613, #2617) and
+# 08d552a2, which retires patches 0035/0036 (warm decode without a drafter
+# 0.966 of cold, was 1.001 -- accepted, see patches/apply-patches.sh DONE).
+# mlx-audio rises to >= 0.6.2 (0.6.3 resolved). Seven patches, upstream suites
+# 2965 passed with and without; Qwen3.8 greedy hash 8b8a02630fcd unchanged,
+# Apertus 1.5 8B text and tool call ok. docs/upstream-2026-10-29.md.
 #
 # 2026-10-20: the RELEASE is back. mlx-vlm 0.7.9 (tagged 2026-10-19 at
 # 9527f2d) is b8bf04c + #2545 + #2548 and carries #2525/#2510/#2527. The pin
@@ -180,7 +192,7 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 PINS=(
   "mlx==0.32.4"
   "mlx-lm==0.31.3"
-  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@60d4005a53855a2db52d1d0acabefbb59f9b1f60"
+  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@a5cfdcf96469f935dc13716a897b5ce431b84e32"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
@@ -326,9 +338,9 @@ def origin(pkg):
 
     A git install is invisible in the version string: main @ 548b09b
     reported "0.7.1", the SAME string as the PyPI 0.7.1 tag that loses exact
-    APC after the first short prompt (#2259), and our 60d4005 reports
-    "0.7.9" like the tag, which has no Apertus 1.5. Since 2026-10-20 mlx-vlm
-    SHOULD show "<- git 60d4005"; a plain "0.7.9" is the tag, not the pin.
+    APC after the first short prompt (#2259), and our a5cfdcf reports
+    "0.7.11" like the tag, which has no Apertus 1.5. Since 2026-10-29 mlx-vlm
+    SHOULD show "<- git a5cfdcf"; a plain "0.7.11" is the tag, not the pin.
     """
     try:
         dist = m.distribution(pkg)
