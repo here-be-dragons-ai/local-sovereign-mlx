@@ -56,7 +56,28 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 [[ "$WANT_MODEL" == kolibri ]] || WANT_QWEN=1
 [[ "$WANT_MODEL" == qwen ]]    || WANT_KOLIBRI=1
 
-# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-10-29).
+# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-11-16).
+#
+# 2026-11-16: mlx-vlm 0.8.0 (tagged 2026-11-16 at 2d80954). The pin is 0dad872 on
+# our fork, branch apertus1p5-on-v0.8.0 = the v0.8.0 tag + the same three
+# Apertus 1.5 commits (no conflict this time). Reports "0.8.0" like the tag;
+# the "<- git 0dad872" suffix below tells the two apart. 0.8.0 brings the
+# /v1/embeddings buffer-cache clear (#2665, NOT in 0.7.12 despite the 11-06
+# note), the tool-streaming SyntaxError guard (#2711), drafter calls on the
+# generation stream plus Metal copy kernels for the hybrid state cache
+# (#2708/#2738, Qwen3.8 + MTP), and model-loading progress under /health
+# (#2732/#2735). Seven patches apply without fuzz; upstream suites pass with
+# and without (counts in docs/upstream-2026-11-16.md).
+#
+# 2026-11-06: mlx-vlm 0.7.12 (tagged 2026-11-04 at 7230940; upstream moved to
+# Neywa-Labs/mlx-vlm, the Blaizzy URL redirects). The pin is 63e2fe6 on our
+# fork, branch apertus1p5-on-v0.7.12 = the v0.7.12 tag + the same three
+# Apertus 1.5 commits (one conflict, the MODEL_CONFIG entry next to upstream's
+# mistral_large4 in prompt_utils.py). Reports "0.7.12" like the tag; the
+# "<- git 63e2fe6" suffix below tells the two apart. 0.7.12 brings APC memory
+# admission (#2645/#2646: a memory-refused restore waits instead of turning
+# into a cold prefill) and bounded prefill (#1630). Seven patches apply without
+# fuzz; upstream suites 4070 passed with and without. docs/upstream-2026-11-06.md.
 #
 # 2026-10-29: mlx-vlm 0.7.11 (tagged 2026-10-28 at 527c513). The pin is
 # a5cfdcf on our fork, branch apertus1p5-on-v0.7.11 = the v0.7.11 tag + the
@@ -192,7 +213,7 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 PINS=(
   "mlx==0.32.4"
   "mlx-lm==0.31.3"
-  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@a5cfdcf96469f935dc13716a897b5ce431b84e32"
+  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@0dad8726841914ec4f5a2952998a078e0a736437"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
@@ -338,9 +359,9 @@ def origin(pkg):
 
     A git install is invisible in the version string: main @ 548b09b
     reported "0.7.1", the SAME string as the PyPI 0.7.1 tag that loses exact
-    APC after the first short prompt (#2259), and our a5cfdcf reports
-    "0.7.11" like the tag, which has no Apertus 1.5. Since 2026-10-29 mlx-vlm
-    SHOULD show "<- git a5cfdcf"; a plain "0.7.11" is the tag, not the pin.
+    APC after the first short prompt (#2259), and our 0dad872 reports
+    "0.8.0" like the tag, which has no Apertus 1.5. Since 2026-11-16 mlx-vlm
+    SHOULD show "<- git 0dad872"; a plain "0.8.0" is the tag, not the pin.
     """
     try:
         dist = m.distribution(pkg)

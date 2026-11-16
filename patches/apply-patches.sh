@@ -12,6 +12,26 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
+# STATE 2026-11-16: verified against mlx-vlm 0.8.0 (tag 2d80954) and mlx
+# 0.32.4; installed is 0dad872 = v0.8.0 + the Apertus 1.5 commits (our fork).
+# The same SEVEN patches, all apply without fuzz; upstream suites pass with and
+# without them (counts in ../docs/upstream-2026-11-16.md). Upstream touched the
+# files of 0011 (prompt_utils.py: new MODEL_CONFIG entries), 0012
+# (server/generation.py: load progress, load_local_drafter) and 0041
+# (dflash2.py: draft_batch, no_rope_layers) -- no hunk overlap. The files of
+# 0010/0014 (ar.py), 0013 (models/base.py) and 0015 (speculative/ops/linear.py)
+# are byte-identical to 0.7.12. ../docs/upstream-2026-11-16.md.
+#
+# STATE 2026-11-06: verified against mlx-vlm 0.7.12 (tag 7230940) and mlx
+# 0.32.4; installed is 63e2fe6 = v0.7.12 + the Apertus 1.5 commits (our fork).
+# The same SEVEN patches, all apply without fuzz; upstream suites 4070 passed
+# with and without them. Upstream touched the files of 0010/0014 (ar.py,
+# apc.py: memory admission #2645, merge memory #2646, bounded prefill #1630),
+# 0011 (prompt_utils.py), 0012 (server/generation.py: DecodeProgress, but the
+# "Decode progress" log line still prints the instantaneous rate, so 0012
+# stays) and 0013 (models/base.py: project_logits) -- no hunk overlap.
+# ../docs/upstream-2026-11-06.md.
+#
 # STATE 2026-10-29: verified against mlx-vlm 0.7.11 (tag 527c513) and mlx
 # 0.32.4; installed is a5cfdcf = v0.7.11 + the Apertus 1.5 commits (our fork).
 # SEVEN patches: 0035 and 0036 are GONE, see the DONE section. 08d552a2 (in

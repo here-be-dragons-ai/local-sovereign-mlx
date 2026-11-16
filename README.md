@@ -87,19 +87,30 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
 
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
-**Pinned, verified state (2026-10-29):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
-**`mlx-vlm` 0.7.11 + Apertus 1.5, @ `a5cfdcf`** (reports `0.7.11`), `transformers 5.15.1`,
+**Pinned, verified state (2026-11-16):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
+**`mlx-vlm` 0.8.0 + Apertus 1.5, @ `0dad872`** (reports `0.8.0`), `transformers 5.15.1`,
 `numpy 2.5.2`, `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
-> `a5cfdcf` is the **`v0.7.11` release** plus the three Apertus 1.5 commits,
-> branch `apertus1p5-on-v0.7.11` of our fork
-> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.7.11).
+> `0dad872` is the **`v0.8.0` release** plus the three Apertus 1.5 commits,
+> branch `apertus1p5-on-v0.8.0` of our fork
+> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.8.0)
+> (upstream now lives at `Neywa-Labs/mlx-vlm`).
 > They touch only `models/apertus1p5/`, the `apertus` tool parser and one line
 > each in four shared files, so the Qwen3.8 and Kolibri path is the release's
 > (greedy output identical), and one venv serves all four models. A plain
-> `mlx-vlm==0.7.11` runs everything but Apertus 1.5. Back to the plain release
-> when Apertus 1.5 lands upstream. 10-20 to 10-29 the pin was `60d4005`
-> (`v0.7.9` + Apertus).
+> `mlx-vlm==0.8.0` runs everything but Apertus 1.5. Back to the plain release
+> when Apertus 1.5 lands upstream. 11-06 to 11-16 the pin was `63e2fe6`
+> (`v0.7.12` + Apertus), 10-29 to 11-06 `a5cfdcf` (`v0.7.11` + Apertus),
+> 10-20 to 10-29 `60d4005` (`v0.7.9` + Apertus).
+>
+> **Since 0.7.12 a request whose prefill does not fit the APC memory budget is
+> rejected** (`APCAdmissionError`) instead of prefilled cold; the planner is
+> unchanged in 0.8.0. Kolibri with the default reserve 1.5 GB: the follow-up
+> turn at 96k fails; `APC_RESERVE_GB=0.5` lets it through. See
+> [docs/upstream-2026-11-06.md](docs/upstream-2026-11-06.md). 0.8.0 adds the
+> `/v1/embeddings` buffer-cache clear (bge-m3), the tool-streaming
+> `SyntaxError` guard and model-loading progress under `/health`:
+> [docs/upstream-2026-11-16.md](docs/upstream-2026-11-16.md).
 >
 > **History: 2026-10-17 to 10-20 the pin was main @ `b8bf04c`**, because Three fixes on this setup's
 > path landed after the `0.7.8` tag: **`#2525`** (a finished speculative batch kept
@@ -112,14 +123,14 @@ Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 >
 > ```sh
 > uv pip install --python ~/src/mlx/.venv/bin/python "mlx==0.32.4" \
->   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@a5cfdcf96469f935dc13716a897b5ce431b84e32"
+>   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@0dad8726841914ec4f5a2952998a078e0a736437"
 > ```
 >
 > Install both in **one** resolution (`install-prereqs.sh` does): a separate
 > git install lets uv reconsider `mlx`. And read the version with its origin:
-> the commit reports `0.7.11` exactly like the tag, so `install-prereqs.sh
-> --check` and the start banner append `(git a5cfdcf)` -- a bare `0.7.11` is
-> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-10-29.md](docs/upstream-2026-10-29.md).
+> the commit reports `0.8.0` exactly like the tag, so `install-prereqs.sh
+> --check` and the start banner append `(git 0dad872)` -- a bare `0.8.0` is
+> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-11-16.md](docs/upstream-2026-11-16.md).
 >
 > **`0.7.1` stays the one release this setup cannot run.** It carries the APC
 > redesign `#2182` without its fix `#2262` (upstream issue **`#2259`**): one

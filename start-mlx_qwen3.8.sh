@@ -582,12 +582,12 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 # ── Patch checks ──────────────────────────────────────────────────────────────
 SITE_PACKAGES=$("$VENV_PY" -c "import mlx_vlm,os;print(os.path.dirname(os.path.dirname(mlx_vlm.__file__)))")
-# The git suffix matters: since 2026-10-29 the pin is a5cfdcf (the v0.7.11 tag
-# + the Apertus 1.5 commits, on our fork), which reports "0.7.11" exactly like
+# The git suffix matters: since 2026-11-16 the pin is 0dad872 (the v0.8.0 tag
+# + the Apertus 1.5 commits, on our fork), which reports "0.8.0" exactly like
 # the tag -- and the tag has no Apertus 1.5.
 # It was the same between 09-17 and 09-21, when the 0.7.1 PyPI tag and main @
 # 548b09b both reported "0.7.1" and only one of them kept its prefix cache
-# (#2259, guard below). A banner showing "0.7.11" WITHOUT "(git a5cfdcf)" runs
+# (#2259, guard below). A banner showing "0.8.0" WITHOUT "(git 0dad872)" runs
 # the tag, not the pin.
 MLX_VLM_VER=$("$VENV_PY" -c "
 import importlib.metadata as m, json
