@@ -12,6 +12,13 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
+# STATE 2026-11-21: EIGHT patches. 0016 is new (apc.py: optional system-RAM
+# probe, see below); the other seven are untouched and mlx-vlm is still
+# 0dad872. The upstream suites were NOT re-run for 0016 -- there is no test
+# venv on this machine at the moment. It is an early return behind an env
+# variable and inert without it; verified through the patched function in both
+# states and by an A/B on the live server.
+#
 # STATE 2026-11-16: verified against mlx-vlm 0.8.0 (tag 2d80954) and mlx
 # 0.32.4; installed is 0dad872 = v0.8.0 + the Apertus 1.5 commits (our fork).
 # The same SEVEN patches, all apply without fuzz; upstream suites pass with and
@@ -267,6 +274,59 @@
 #   QWEN38_FUSED_LINEARS=0 it returns None, attaches nothing, and the outputs of
 #   _target_verify_linears are bit-identical (max abs diff 0.0).
 #   Rollback: QWEN38_FUSED_LINEARS=1
+#
+# 0016-apc-optional-system-ram-probe.patch   (LOCAL, no upstream PR)
+#   QWEN38_APC_SYSTEM_RAM=0 makes apc._free_ram_bytes() return None, its
+#   documented "don't know -- proceed". APC memory admission then budgets
+#   against the Metal working set alone (working set - active, less the
+#   reserve) and no longer against free+inactive from vm_stat.
+#   WHY: since 0.7.12 (#2645) a request that fails admission while it is alone
+#   gets HTTP 500 "The request cannot fit the APC prefill memory budget even
+#   alone. Reduce the context length or memory reserve." instead of a cold
+#   prefill. On 2026-11-21 that hit production: Qwen3.8 on :8888, a pi session
+#   at 48,015 tokens, one second after its 43,922-token turn had completed, and
+#   again on the retry after a server restart.
+#   MEASURED 2026-11-21 (48 GB, working set 40 GiB, 16 GiB of weights, a VM and
+#   Safari running; vm_stat every 1.5 s next to the server):
+#     idle                         wired  3.1 GiB   free+inactive 21.6 GiB
+#     3 s into a 15k request       wired 23.0 GiB   free+inactive 11.8 GiB
+#     rest of that request         wired ~25  GiB   free+inactive 8.5-9.5 GiB
+#   The request allocated under 1 GiB. The difference is the server's own
+#   weights: "inactive" while idle, wired by the first GPU eval, unwired again
+#   within seconds of the last one. The cohort check in
+#   generate/ar.py:_admit_prefill runs after the restore has evaluated
+#   (snapshot loaded and expanded, +5.9 GiB at 48k), so it always reads the low
+#   value, and it asks for reserve + 2 x row on top of that: 4.00 + 6.16 =
+#   10.16 GiB at 48,023 tokens (row = 67.3 KiB/token, replayed against the real
+#   snapshot with the mlx_vlm classes). The Metal side had 16-18 GiB free.
+#   A/B ON THE LIVE SERVER, the same two requests sent back to back:
+#     probe on    43,920 cold ok (115.9 s)   47,908 follow-up  HTTP 500 in 0.7 s
+#     probe off   43,920 hit    (1.4 s)      47,908 follow-up  ok in 14.1 s,
+#                                            cached 43,919, peak 25.6 GiB
+#     probe off   59,988 cold ok (166.9 s)   63,998 follow-up  ok in 17.8 s,
+#                                            cached 59,987, peak 30.7 GiB
+#   WHAT THE PROBE DID NOT PROTECT: a cold request is checked while the weights
+#   still count as available. The cold 43,920-token prefill passed seconds
+#   before its follow-up was rejected, and on 11-06 a cold 60k passed
+#   (../docs/upstream-2026-11-06.md). It turned away the cheap follow-ups and
+#   let the expensive cold prefills through.
+#   WHAT IS LOST: the low_ram gate of the disk tier (APC_DISK_MIN_FREE_RAM_GB)
+#   reads the same probe and is inert with it. And, from the code, not
+#   measured: _make_room() clears the MLX buffer cache on "headroom <
+#   required", which is rarer now.
+#   AT 64k THIS MACHINE IS AT ITS EDGE: during the 63,998-token follow-up wired
+#   peaked at 40.4 GiB, free+inactive fell to 1.07 GiB and swap grew from 6.7
+#   to 10.4 GB (MLX active+cache up to 37.1 GiB, 8.5 GiB of it buffer cache).
+#   The patch does not create that state -- a cold 60k was admitted before --
+#   but it no longer stops a follow-up from entering it. The Metal-side reserve
+#   (working set / 10) stays in force.
+#   NOT PATCHED, seen on the way: the cohort check calls memory_plan.prepare()
+#   without crediting the restored row, although the lookup that produced it
+#   does (reserve_bytes(size)). At 48k it demands 6.16 GiB where 3.08 GiB are
+#   still to come.
+#   The default stays upstream behaviour; start-mlx_qwen3.8.sh sets the
+#   variable (APC_SYSTEM_RAM, default 0). The other start scripts do not.
+#   Rollback: APC_SYSTEM_RAM=1
 #
 # 0011-role-compat-developer-to-system.patch   (LOCAL, no upstream PR)
 #   Qwen3.8's chat_template accepts only system/user/assistant/tool and calls

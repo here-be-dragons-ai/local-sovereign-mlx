@@ -483,12 +483,31 @@ Time to first token is still to be measured on stable mains power.
 
 ## Patches
 
-Seven patches against `site-packages`, applied by `patches/apply-patches.sh`
+Eight patches against `site-packages`, applied by `patches/apply-patches.sh`
 (idempotent, `--check` / `--revert`). **They vanish on every
 `pip install -U mlx-vlm`** -- run it again afterwards.
 
-All seven are **local work** for Qwen3.8-27B; no foreign PR is carried since
+All eight are **local work** for Qwen3.8-27B; no foreign PR is carried since
 2026-10-29.
+
+What changed on 2026-11-21 (mlx-vlm unchanged at `0dad872`):
+
+- **`0016` is new.** Since `0.7.12` a follow-up turn that fails APC memory
+  admission is answered with HTTP 500 (*"The request cannot fit the APC
+  prefill memory budget even alone"*). The check reads `free + inactive` from
+  `vm_stat`, and that value drops by about the size of the model once the GPU
+  runs, because the server's own weights are only counted as available while
+  idle (21.6 GiB idle, 8.5-9.5 GiB during a request that allocated under
+  1 GiB). A pi session was rejected at 48k tokens with 16-18 GiB of the Metal
+  working set free. `0016` adds `QWEN38_APC_SYSTEM_RAM=0`, which turns that
+  probe off; `start-mlx_qwen3.8.sh` sets it (`APC_SYSTEM_RAM=1` restores
+  upstream). Same two requests back to back: 47,908-token follow-up HTTP 500
+  before, 14.1 s with 43,919 cached tokens after; a 63,998-token follow-up
+  passes too.
+- **64k is the edge of this machine**, patch or not: wired peaked at 40.4 GiB,
+  `free + inactive` fell to 1.07 GiB and swap grew by 3.7 GB during that
+  follow-up, with a VM and Safari running. Measurements and what the patch
+  gives up are in `patches/apply-patches.sh`.
 
 What changed on 2026-10-29, moving to the `0.7.11` release (+ Apertus 1.5):
 

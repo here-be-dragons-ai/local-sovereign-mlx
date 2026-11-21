@@ -1,0 +1,23 @@
+--- a/mlx_vlm/apc.py
++++ b/mlx_vlm/apc.py
+@@ -1078,6 +1078,20 @@
+     Uses ``psutil`` when available; falls back to ``vm_stat`` on macOS.
+     Never raises.
+     """
++    # QWEN38_APC_SYSTEM_RAM=0 skips this probe (local patch 0016).
++    # free+inactive is not a stable reading on Apple Silicon. An idle server's
++    # own weights sit in "inactive" and count as available; the first GPU eval
++    # of a request wires them and the reading drops by about their size.
++    # Measured 2026-11-21 (Qwen3.8-27B, 16 GiB of weights, 48 GB): 21.6 GiB
++    # idle, 9.5 GiB while a 15k-token request ran that allocated under 1 GiB.
++    # The APC admission checks run after a restore has evaluated, so they
++    # always see the low reading: a 48k-token follow-up turn was rejected
++    # ("cannot fit the APC prefill memory budget even alone") with 18 GiB of
++    # the Metal working set free. With the probe off the callers get the
++    # documented "don't know -- proceed" and budget against the Metal working
++    # set alone. The default stays upstream behaviour.
++    if os.environ.get("QWEN38_APC_SYSTEM_RAM") == "0":
++        return None
+     try:
+         import psutil  # type: ignore
+ 

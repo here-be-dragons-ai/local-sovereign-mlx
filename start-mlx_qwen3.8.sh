@@ -488,6 +488,33 @@ fi
 # upstream default of 2.0 is too tight for 32 GB -- a restore straight into
 # memory pressure is exactly the road to "[METAL] Insufficient Memory".
 APC_MIN_FREE_RAM_GB="${APC_MIN_FREE_RAM_GB:-$_APC_MINFREE}"
+# 0 = APC admission budgets against the Metal working set alone and skips the
+# system-RAM probe (free+inactive from vm_stat). Needs local patch 0016.
+#
+# WHY: since mlx-vlm 0.7.12 (#2645) a prefill that does not pass the admission
+# check is answered with HTTP 500 "The request cannot fit the APC prefill
+# memory budget even alone" instead of being prefilled cold. The check wants
+# reserve (working set / 10 = 4 GiB) + 2 x the KV footprint of the whole prompt
+# within min(working set - active, free+inactive + MLX cache).
+# MEASURED 2026-11-21 on this machine (48 GB, 40 GiB working set), 1.5 s samples
+# of vm_stat next to the server:
+#   idle, weights loaded            wired  3.1 GiB   free+inactive 21.6 GiB
+#   3 s into a 15k-token request    wired 23.0 GiB   free+inactive 11.8 GiB
+#   rest of that request            wired ~25  GiB   free+inactive 8.5-9.5 GiB
+# The request itself allocated under 1 GiB. The other 10+ GiB are the server's
+# OWN weights: unwired and "inactive" while idle, wired by the first GPU eval.
+# The check runs after the snapshot restore has evaluated, so it always sees
+# the low reading -- and the restore has taken its own 2 x footprint out of it
+# by then. Reproduced on demand: a cold 43,920-token turn passes, the
+# 47,908-token follow-up 0.1 s later is rejected (needs 10.16 GiB, Metal side
+# had 16-18 GiB, free+inactive stood at ~9.7 GiB before the restore). In pi
+# that is every agent session once it grows past roughly 44-48k tokens.
+# With the probe off the limit is working set - active, which is what the
+# banner and the watchdog budget against anyway. The 4 GiB reserve stays.
+# SIDE EFFECT: APC_MIN_FREE_RAM_GB above reads the same probe and is inert
+# while this is 0.
+# Rollback: APC_SYSTEM_RAM=1 ./start-mlx_qwen3.8.sh   (= upstream behaviour)
+APC_SYSTEM_RAM="${APC_SYSTEM_RAM:-0}"
 # Suppresses the redundant full snapshot (the checkpoint at len-16 is always the
 # one that hits). Halves APC memory. Needs local patch 0010
 # (patches/apply-patches.sh) -- without it the variable has no effect and the
@@ -642,6 +669,16 @@ grep -q "QWEN38_APC_SINGLE_SNAPSHOT" "$SITE_PACKAGES/mlx_vlm/generate/ar.py" 2>/
 if [[ "$APC_SINGLE" != "0" && "$APC_SINGLE_OK" == "0" ]]; then
   echo "⚠️  WARNING: patch 0010 missing -- APC_SINGLE has no effect, every request" >&2
   echo "    stores TWO snapshots (double APC memory, half the context)." >&2
+  echo "    Fix:  ./patches/apply-patches.sh" >&2
+fi
+# Patch 0016 (system-RAM probe off). Without it APC_SYSTEM_RAM=0 has no effect
+# and follow-up turns past roughly 44-48k tokens come back as HTTP 500.
+APC_SYSRAM_OK=0
+grep -q "QWEN38_APC_SYSTEM_RAM" "$SITE_PACKAGES/mlx_vlm/apc.py" 2>/dev/null && APC_SYSRAM_OK=1
+if [[ "$ENABLE_APC" == "1" && "$APC_SYSTEM_RAM" == "0" && "$APC_SYSRAM_OK" == "0" ]]; then
+  echo "⚠️  WARNING: patch 0016 missing -- APC_SYSTEM_RAM=0 has no effect. Follow-up" >&2
+  echo "    turns past roughly 44-48k tokens are rejected with 'cannot fit the APC prefill" >&2
+  echo "    memory budget even alone' whenever the weights are wired." >&2
   echo "    Fix:  ./patches/apply-patches.sh" >&2
 fi
 
@@ -1167,6 +1204,7 @@ echo "  Port     :  $BIND_HOST:$PORT"
 echo "  SpecDec  :  $SPEC_STATUS  (drafter: $DRAFT_KIND, $(du -shL "$DRAFT_MODEL" 2>/dev/null | cut -f1)${DRAFT_BLOCK_SIZE:+, block_size $DRAFT_BLOCK_SIZE})"
 if [[ "$ENABLE_APC" == "1" ]]; then
   echo "  APC      :  ON ($APC_ENTRIES snapshots, single=$([[ "$APC_SINGLE" != "0" && "$APC_SINGLE_OK" == "1" ]] && echo yes || echo NO)${APC_DISK:+, SSD: $APC_DISK})"
+  echo "  APC admit:  $([[ "$APC_SYSTEM_RAM" == "0" && "$APC_SYSRAM_OK" == "1" ]] && echo "Metal working set only (patch 0016; APC_SYSTEM_RAM=1 restores the vm_stat probe)" || echo "Metal working set AND free+inactive (upstream; rejects follow-ups past ~44-48k)")"
 else
   echo "  APC      :  OFF"
 fi
@@ -1334,6 +1372,9 @@ if [[ "$ENABLE_APC" == "1" ]]; then
   fi
 fi
 [[ "$APC_SINGLE" != "0" ]] && export QWEN38_APC_SINGLE_SNAPSHOT=1
+# Exported in both directions: an inherited QWEN38_APC_SYSTEM_RAM=0 must not
+# survive APC_SYSTEM_RAM=1.
+[[ "$APC_SYSTEM_RAM" == "0" ]] && export QWEN38_APC_SYSTEM_RAM=0 || export QWEN38_APC_SYSTEM_RAM=1
 
 # CWD = models root so the relative alias name resolves
 # (get_model_path() does Path(name).exists() against the working directory).
