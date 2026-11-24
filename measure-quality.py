@@ -79,6 +79,21 @@ PROFILES = {
         "tokenizer": "3bit",
         "data": "~/src/mlx/kolibri-quality",
     },
+    # Kolibri 1.1: tokenizer and chat template of Kolibri 1 (2026-11-24: same
+    # vocabulary, the raw texts and a rendered dialogue tokenize alike). Its
+    # sets are those of the kolibri profile, copied: <data>/sets and
+    # <data>/raw from ~/src/mlx/kolibri-quality. The numbers of both models
+    # are on the same tokens. No sequence exceeds the indexer pool (16,384).
+    "kolibri11": {
+        "checkpoints": {
+            "fp8": MODELS / "Kolibri-1.1-FP8",
+            "3bit": MODELS / "Kolibri-1.1-MLX-3bit",
+            "3bit-uniform": MODELS / "Kolibri-1.1-MLX-3bit-uniform",
+        },
+        "reference": "fp8",
+        "tokenizer": "fp8",
+        "data": "~/src/mlx/kolibri11-quality",
+    },
     # Needs the apertus1p5 branch of mlx-vlm: run with ~/src/mlx/.venv-apertus.
     # Only the language model is measured.
     "apertus": {
@@ -188,6 +203,22 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def load_tokenizer(path):
+    """AutoTokenizer; via a staging copy where transformers rejects config.json
+    (Kolibri 1.1 as released: layer type "indexed_attention")."""
+    from transformers import AutoTokenizer
+
+    cfg = path / "config.json"
+    config = json.loads(cfg.read_text()) if cfg.exists() else {}
+    if "indexed_attention" not in config.get("layer_types", []):
+        return AutoTokenizer.from_pretrained(str(path))
+    staging = _load_sibling("convert-kolibri.py", "_conv").make_staging(path, fp8=False)
+    try:
+        return AutoTokenizer.from_pretrained(str(staging))
+    finally:
+        shutil.rmtree(staging)
+
+
 # ── prepare ──────────────────────────────────────────────────────────────────
 
 
@@ -271,7 +302,7 @@ def cmd_prepare(args):
     data = args.data
     (data / "raw").mkdir(parents=True, exist_ok=True)
     (data / "sets").mkdir(parents=True, exist_ok=True)
-    tok = AutoTokenizer.from_pretrained(str(ckpt_path(TOKENIZER_ARM)))
+    tok = load_tokenizer(ckpt_path(TOKENIZER_ARM))
     builders = {
         "core": (prepare_core, "text"),  # text, belebele-*, gmmlu-*
         "calib-v5": (prepare_calib_v5, "calib-v5"),
@@ -667,8 +698,7 @@ def load_lazy(path):
     from mlx_vlm import load
 
     conv = _load_sibling("convert-kolibri.py", "_conv")
-    if config.get("model_type") == "kolibri1":
-        conv.use_local_kolibri1()
+    conv.use_local(config.get("model_type"))
     if "quantization_config" in config:
         staging = conv.make_staging(path)
         try:
@@ -678,6 +708,42 @@ def load_lazy(path):
     else:
         model, _ = load(str(path), lazy=True)
     return model.language_model
+
+
+def _sparse_layer(layer, i, kv_source, proto, h, side, chunk):
+    """A Kolibri 1.1 sparse layer on one sequence.
+
+    Such a layer attends over the K/V of layer kv_source[i], itself or an
+    earlier one, and selects from the pool of the last indexer. side["kv"]
+    keeps the K/V of the layers others read, side["pool"] the pool (None
+    while the sequence fits the pool).
+    """
+    import mlx.core as mx
+
+    src = kv_source[i]
+    kv = side["kv"].get(src) if src != i else None
+    pool = side.get("pool")
+    if not chunk:
+        out, kv, pool = layer(h, kv=kv, pool=pool)
+    else:
+        cache = copy.deepcopy(proto) if src == i else None
+        parts, new = [], kv
+        for a in range(0, h.shape[1], chunk):
+            b = min(a + chunk, h.shape[1])
+            seen = None if kv is None else (kv[0][:, :, :b], kv[1][:, :, :b])
+            o, new, p = layer(h[:, a:b], cache=cache, kv=seen, pool=None)
+            if p is not None or pool is not None:
+                sys.exit("chunked forward: sequence longer than the indexer pool, not supported")
+            mx.eval(o)
+            parts.append(o)
+        out = mx.concatenate(parts, axis=1)
+        if src == i:
+            kv = new  # the cache after the last piece: every position
+    if src == i:
+        side["kv"][i] = kv
+    side["pool"] = pool
+    mx.eval(out, *kv, *([] if pool is None else [pool]))
+    return out
 
 
 def streamed_forward(lm, seqs, keep_last, partial=None, chunk=None):
@@ -695,6 +761,13 @@ def streamed_forward(lm, seqs, keep_last, partial=None, chunk=None):
 
     inner = lm.model
     layers = inner.layers
+    # Kolibri 1.1: K/V and pool pass between layers. The resume file does not
+    # hold them, so a set restarts from its first layer.
+    kv_source = getattr(inner, "kv_source", None)
+    cache_index = getattr(inner, "cache_index", None)
+    side = [{"kv": {}} for _ in seqs]
+    if kv_source is not None:
+        partial = None
     start = 0
     if partial is not None and partial.exists():
         saved = mx.load(str(partial))
@@ -718,10 +791,15 @@ def streamed_forward(lm, seqs, keep_last, partial=None, chunk=None):
         layer = layers[i]
         window = layer_window(inner, layer)
         sliding = window is not None
+        ci = cache_index[i] if cache_index else i
+        proto = protos[ci] if chunk and ci is not None else None
         for j, h in enumerate(hs):
             L = h.shape[1]
+            if kv_source is not None and not sliding:
+                hs[j] = _sparse_layer(layer, i, kv_source, proto, h, side[j], chunk)
+                continue
             if chunk:
-                cache = copy.deepcopy(protos[i])
+                cache = copy.deepcopy(proto)
                 parts = []
                 for a in range(0, L, chunk):
                     hc = h[:, a : a + chunk]
@@ -736,6 +814,11 @@ def streamed_forward(lm, seqs, keep_last, partial=None, chunk=None):
                 masks[key] = create_attention_mask(h, None, window_size=window)
             hs[j] = layer(h, masks[key])
             mx.eval(hs[j])
+        if kv_source is not None:
+            later = set(kv_source[i + 1 :])
+            for sd in side:
+                for l in [l for l in sd["kv"] if l not in later]:
+                    del sd["kv"][l]
         layers[i] = None
         del layer
         mx.clear_cache()
@@ -859,7 +942,7 @@ def cmd_gguf(args):
     # keeps the ids; check a sample of the text set anyway.
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(str(ckpt_path(TOKENIZER_ARM)))
+    tok = load_tokenizer(ckpt_path(TOKENIZER_ARM))
     sample = sorted(set(next(iter(sets.values()))["seqs"][0][:2000]))
     mismatch = [i for i, piece in zip(sample, g.pieces(sample))
                 if piece.decode("utf-8", "replace") != tok.decode([i])]

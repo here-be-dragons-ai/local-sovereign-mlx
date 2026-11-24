@@ -21,10 +21,15 @@ what the layer adds to the residual stream, reported as the ratio of sums
 over all tokens of a group (chat, wiki). Also counted: how often each of the
 384 experts is routed to, per layer and group.
 
-    ./diagnose-kolibri-layers.py [--seqs 2] [--tokens 2048] [--variants shipped,down3,...]
+    ./diagnose-kolibri-layers.py [--model kolibri11] [--seqs 2] [--tokens 2048] [--variants shipped,down3,...]
 
-Uses the kolibri profile of measure-quality.py (sets, FP8 path). Stop the
-server first; the run streams the 73 GB release once.
+Uses a kolibri profile of measure-quality.py (sets, FP8 path). Stop the
+server first; the run streams the FP8 release once.
+
+Kolibri 1.1 (--model kolibri11): a sparse layer that reads another layer's
+K/V gets the FP8 K/V in every variant, so the error is still that of the
+layer alone. Layers 0 and 1 have a dense MLP, no routing. At the default
+2048 tokens no key selection takes place (it starts past 2184).
 """
 
 import argparse
@@ -48,11 +53,11 @@ VARIANTS = {
 }
 
 
-def _mq():
+def _mq(profile="kolibri"):
     spec = importlib.util.spec_from_file_location("_mq", _HERE / "measure-quality.py")
     mq = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mq)
-    mq.use_profile("kolibri")
+    mq.use_profile(profile)
     return mq
 
 
@@ -86,18 +91,25 @@ def quantized_copy(layer, recipe):
     return q
 
 
-def run_layer(layer, x, mask):
-    """The layer's forward, also returning the routed expert indices."""
+def run_layer(layer, x, mask, kv=None):
+    """The layer's forward; also the routed expert indices (None for a dense
+    MLP) and the (K, V) a Kolibri 1.1 sparse layer attended over (else None)."""
     import mlx.core as mx
 
-    r = layer.self_attn(layer.input_layernorm(x), mask, None)
+    a = layer.input_layernorm(x)
+    if hasattr(layer.self_attn, "select"):  # Kolibri 1.1 sparse layer
+        r, kv, _ = layer.self_attn(a, kv, None, None)
+    else:
+        r, kv = layer.self_attn(a, mask, None), None
     h = x + layer.post_attn_norm(r)
     xm = layer.post_attention_layernorm(h)
     moe = layer.mlp
-    logits = xm.astype(mx.float32) @ moe.gate.weight.astype(mx.float32).T
-    k = moe.num_experts_per_tok
-    inds = mx.argpartition(-(logits + moe.expert_bias), kth=k - 1, axis=-1)[..., :k]
-    return h + layer.post_ffn_norm(moe(xm)), inds
+    inds = None
+    if hasattr(moe, "gate"):
+        logits = xm.astype(mx.float32) @ moe.gate.weight.astype(mx.float32).T
+        k = moe.num_experts_per_tok
+        inds = mx.argpartition(-(logits + moe.expert_bias), kth=k - 1, axis=-1)[..., :k]
+    return h + layer.post_ffn_norm(moe(xm)), inds, kv
 
 
 def main():
@@ -105,12 +117,13 @@ def main():
     from mlx_vlm.models.base import create_attention_mask
 
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--model", default="kolibri", choices=["kolibri", "kolibri11"])
     ap.add_argument("--seqs", type=int, default=2, help="sequences per group")
     ap.add_argument("--tokens", type=int, default=2048, help="tokens per sequence")
     ap.add_argument("--variants", default=",".join(VARIANTS))
     ap.add_argument("--layers", type=int, help="stop after this many layers (smoke test)")
     args = ap.parse_args()
-    mq = _mq()
+    mq = _mq(args.model)
     data = Path(mq.DEFAULT_DATA).expanduser()
     sets = mq.load_sets(data, ["chat", "text"])
     seqs = [("chat", s[: args.tokens]) for s in sets["chat"]["seqs"][: args.seqs]]
@@ -128,7 +141,9 @@ def main():
         mx.eval(h)
         hs.append(h)
     inner.embed_tokens = None
-    n_experts = inner.layers[0].mlp.gate.weight.shape[0]
+    n_experts = lm.args.num_experts
+    kv_source = getattr(inner, "kv_source", None)  # Kolibri 1.1
+    kvs = [{} for _ in seqs]
     result = {"date": time.strftime("%Y-%m-%d"), "seqs": [(g, len(s)) for g, s in seqs],
               "variants": {v: VARIANTS[v] for v in variants}, "layers": []}
     n_layers = args.layers or len(inner.layers)
@@ -142,20 +157,30 @@ def main():
         usage = {g: mx.zeros((n_experts,), dtype=mx.int32) for g in ("chat", "wiki")}
         masks = [create_attention_mask(h, None, window_size=window) for h in hs]
         outs = []
-        for (g, _), h, m in zip(seqs, hs, masks):
-            o, inds = run_layer(layer, h, m)
-            usage[g] = usage[g] + mx.zeros((n_experts,), dtype=mx.int32).at[inds.flatten()].add(1)
+        src = kv_source[i] if kv_source else i
+        for (g, _), h, m, kv in zip(seqs, hs, masks, kvs):
+            o, inds, new = run_layer(layer, h, m, kv.get(src))
+            if inds is not None:
+                usage[g] = usage[g] + mx.zeros((n_experts,), dtype=mx.int32).at[inds.flatten()].add(1)
+            if new is not None and src == i:
+                kv[i] = new
+                mx.eval(*new)
             upd = (o - h).astype(mx.float32)
             den[g] += mx.sum(upd * upd).item()
             outs.append(o)
             mx.eval(o)
         for v in variants:
             q = quantized_copy(layer, VARIANTS[v])
-            for (g, _), h, m, o in zip(seqs, hs, masks, outs):
-                d = (q(h, m) - o).astype(mx.float32)
+            for (g, _), h, m, o, kv in zip(seqs, hs, masks, outs, kvs):
+                d = (run_layer(q, h, m, kv.get(src) if src != i else None)[0] - o).astype(mx.float32)
                 num[(v, g)] += mx.sum(d * d).item()
             del q
             mx.clear_cache()
+        if kv_source:
+            later = set(kv_source[i + 1 :])
+            for kv in kvs:
+                for l in [l for l in kv if l not in later]:
+                    del kv[l]
         entry = {"layer": i, "sliding": bool(layer.use_sliding),
                  "rel_error": {v: {g: (num[(v, g)] / den[g]) ** 0.5 for g in den} for v in variants},
                  "usage": {g: usage[g].tolist() for g in usage}}
