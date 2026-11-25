@@ -87,30 +87,36 @@ self-test → patches → model + drafter → `~/.mlx-qwen38/{logs,apc}`
 
 Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 
-**Pinned, verified state (2026-11-16):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
-**`mlx-vlm` 0.8.0 + Apertus 1.5, @ `0dad872`** (reports `0.8.0`), `transformers 5.15.1`,
+**Pinned, verified state (2026-11-25):** `mlx 0.32.4`, `mlx-lm 0.31.3`,
+**`mlx-vlm` 0.8.1 + Apertus 1.5, @ `25c51dd`** (reports `0.8.1`), `transformers 5.15.1`,
 `numpy 2.5.2`, `huggingface-hub 1.27.0`, `pillow 12.3.0`, Python 3.12.
 
-> `0dad872` is the **`v0.8.0` release** plus the three Apertus 1.5 commits,
-> branch `apertus1p5-on-v0.8.0` of our fork
-> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.8.0)
+> `25c51dd` is the **`v0.8.1` release** plus the three Apertus 1.5 commits,
+> branch `apertus1p5-on-v0.8.1` of our fork
+> [here-be-dragons-ai/mlx-vlm](https://github.com/here-be-dragons-ai/mlx-vlm/tree/apertus1p5-on-v0.8.1)
 > (upstream now lives at `Neywa-Labs/mlx-vlm`).
 > They touch only `models/apertus1p5/`, the `apertus` tool parser and one line
 > each in four shared files, so the Qwen3.8 and Kolibri path is the release's
 > (greedy output identical), and one venv serves all four models. A plain
-> `mlx-vlm==0.8.0` runs everything but Apertus 1.5. Back to the plain release
-> when Apertus 1.5 lands upstream. 11-06 to 11-16 the pin was `63e2fe6`
+> `mlx-vlm==0.8.1` runs everything but Apertus 1.5. Back to the plain release
+> when Apertus 1.5 lands upstream. 11-16 to 11-25 the pin was `0dad872`
+> (`v0.8.0` + Apertus), 11-06 to 11-16 `63e2fe6`
 > (`v0.7.12` + Apertus), 10-29 to 11-06 `a5cfdcf` (`v0.7.11` + Apertus),
 > 10-20 to 10-29 `60d4005` (`v0.7.9` + Apertus).
 >
 > **Since 0.7.12 a request whose prefill does not fit the APC memory budget is
 > rejected** (`APCAdmissionError`) instead of prefilled cold; the planner is
-> unchanged in 0.8.0. Kolibri with the default reserve 1.5 GB: the follow-up
+> unchanged in 0.8.0 and 0.8.1. 0.8.1 (`#2806`) drops a prefill step's lazy
+> logits before the admission, so a checkpoint is no longer refused for
+> buffers that were about to be freed. Kolibri with the default reserve 1.5 GB: the follow-up
 > turn at 96k fails; `APC_RESERVE_GB=0.5` lets it through. See
 > [docs/upstream-2026-11-06.md](docs/upstream-2026-11-06.md). 0.8.0 adds the
 > `/v1/embeddings` buffer-cache clear (bge-m3), the tool-streaming
 > `SyntaxError` guard and model-loading progress under `/health`:
-> [docs/upstream-2026-11-16.md](docs/upstream-2026-11-16.md).
+> [docs/upstream-2026-11-16.md](docs/upstream-2026-11-16.md). 0.8.1 reworks
+> the tool-call handling in `server/openai.py` and shares one generation
+> stream between ordinary and speculative decoding:
+> [docs/upstream-2026-11-25.md](docs/upstream-2026-11-25.md).
 >
 > **History: 2026-10-17 to 10-20 the pin was main @ `b8bf04c`**, because Three fixes on this setup's
 > path landed after the `0.7.8` tag: **`#2525`** (a finished speculative batch kept
@@ -123,14 +129,14 @@ Paths via env: `MLX_HOME` (default `~/src/mlx`), `MLX_MODELS`, `PYTHON_VERSION`.
 >
 > ```sh
 > uv pip install --python ~/src/mlx/.venv/bin/python "mlx==0.32.4" \
->   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@0dad8726841914ec4f5a2952998a078e0a736437"
+>   "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@25c51dd89d3eceeaa368f4daac6f4b7b47657fee"
 > ```
 >
 > Install both in **one** resolution (`install-prereqs.sh` does): a separate
 > git install lets uv reconsider `mlx`. And read the version with its origin:
-> the commit reports `0.8.0` exactly like the tag, so `install-prereqs.sh
-> --check` and the start banner append `(git 0dad872)` -- a bare `0.8.0` is
-> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-11-16.md](docs/upstream-2026-11-16.md).
+> the commit reports `0.8.1` exactly like the tag, so `install-prereqs.sh
+> --check` and the start banner append `(git 25c51dd)` -- a bare `0.8.1` is
+> the tag, without Apertus 1.5. Measured: [docs/upstream-2026-11-25.md](docs/upstream-2026-11-25.md).
 >
 > **`0.7.1` stays the one release this setup cannot run.** It carries the APC
 > redesign `#2182` without its fix `#2262` (upstream issue **`#2259`**): one
@@ -214,13 +220,13 @@ A profile sets *defaults* only; individual env variables still win.
 | `BIND_HOST` / `PORT` | `127.0.0.1` / `8888` | bind address |
 | `MODEL_ALIAS` | `Qwen3.8-27B-local` | **must** match the model name in the request |
 | `STATE_DIR` | `~/.mlx-qwen38` | log and SSD prefix cache |
+| `MLX_CACHE_LIMIT_GB` | `2` | cap on mlx's buffer cache (freed Metal buffers, still wired); empty = mlx default, no cap. −6.3 GiB at a 64k follow-up turn, see [docs/memory.md](docs/memory.md) |
 
 > **`ENABLE_SPEC_DECODE=0` is an operating mode** (since patch `0035` on
 > 2026-09-24, upstream itself since `0.7.11`). Without a drafter, a warm
 > exact-APC hit used to decode at two thirds of the cold rate (upstream issue
 > `#2210`): Qwen3.5's single-row shortcut ran `extract()` + `merge()` on every
 > full-attention cache, i.e. copied the whole KV prefix on every decode token.
-| `MLX_CACHE_LIMIT_GB` | `2` | cap on mlx's buffer cache (freed Metal buffers, still wired); empty = mlx default, no cap. −6.3 GiB at a 64k follow-up turn, see [docs/memory.md](docs/memory.md) |
 > `0035` (upstream PR `#2336`) borrowed the arrays instead: warm/cold
 > **0.658 -> 0.998** at 26,690 tokens. `0.7.11` (`08d552a2`) keeps decode out
 > of the shortcut altogether, and `0035`/`0036` are retired: measured
@@ -274,12 +280,6 @@ compression:
 trigger down and wastes context. Pick the value your client reserves for a
 response and no more.
 
-The old hard cap of 8192 came from an upstream bug (#1972) that killed
-generations at ~10.3k tokens; it is fixed since mlx-vlm 0.6.16.
-
-The start script can cross-check a YAML config for you:
-
-```sh
 **Size what the client keeps after a compaction against its fixed prefix.**
 The first prompt after a compaction is the fixed prefix (system prompt, tool
 definitions) + the summary + the turns kept verbatim, and it is a cold prefill:
@@ -293,6 +293,12 @@ server time. A smaller window makes that worse: at 49152 the trigger (32768)
 lies below the prompt a compaction leaves behind. The pi instances run
 `keepRecentTokens` 10000 since then; the effect is not measured yet.
 
+The old hard cap of 8192 came from an upstream bug (#1972) that killed
+generations at ~10.3k tokens; it is fixed since mlx-vlm 0.6.16.
+
+The start script can cross-check a YAML config for you:
+
+```sh
 CLIENT_CONFIG=~/path/to/config.yaml ./start-mlx_qwen3.8.sh
 ```
 
@@ -776,13 +782,13 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 | `measure-drafter-acceptance.py` | acceptance rate across the chunked-prefill boundary (patch `0032`) |
 | `measure-batch-cache-retention.py` | idle GPU-memory floor between requests -- does a finished request give its KV cache back? (upstream #2310) |
 | `measure-apc-warm-decode.py` | decode rate on an exact-APC warm hit against a cold request (issue `#2210`) |
+| `verify-apc-followup.py` | two turns back to back at 44k → 48k and 60k → 64k: is the follow-up admitted and served from the snapshot (patch `0016`); run after every mlx-vlm update |
 | `set-iogpu-wired-limit.sh` | computes `iogpu.wired_limit_mb` from `hw.memsize`, clamps |
 | `install-wired-limit-daemon.sh` | installs helper + LaunchDaemon, idempotent |
 | `patches/apply-patches.sh` | apply / check / revert patches |
 
 ---
 
-| `verify-apc-followup.py` | two turns back to back at 44k → 48k and 60k → 64k: is the follow-up admitted and served from the snapshot (patch `0016`); run after every mlx-vlm update |
 ## Where the numbers come from
 
 All values marked "measured" come from an **M5 Pro / 48 GB** machine (mlx-vlm

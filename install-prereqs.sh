@@ -56,7 +56,23 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 [[ "$WANT_MODEL" == kolibri ]] || WANT_QWEN=1
 [[ "$WANT_MODEL" == qwen ]]    || WANT_KOLIBRI=1
 
-# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-11-16).
+# Pinned state, VERIFIED as working on an M5 Pro / macOS 26 (2026-11-25).
+#
+# 2026-11-25: mlx-vlm 0.8.1 (tagged 2026-11-23 at 36494b4). The pin is 25c51dd on
+# our fork, branch apertus1p5-on-v0.8.1 = the v0.8.1 tag + the same three
+# Apertus 1.5 commits (no conflict). Reports "0.8.1" like the tag; the
+# "<- git 25c51dd" suffix below tells the two apart. 0.8.1 brings #2806 (the
+# prefill step drops its lazy logits before the APC admission; found on a
+# 48 GB M5 Pro serving Qwen3.8-27B), one generation stream for ordinary and
+# speculative decoding (#2753), the tool-call rework of server/openai.py
+# (#2784/#2786/#2817) and the CLI thinking default of #2747 (the server still
+# sends enable_thinking explicitly). Eight patches apply without fuzz; the
+# upstream suites give the same counts with and without them (counts in
+# docs/upstream-2026-11-25.md). The 95 red tests are Inkling response-template
+# server tests that need a newer transformers than 5.15.1 (green with 5.23.0;
+# none of our checkpoints has a response template). mlx 0.32.5 (released
+# 2026-11-25) passes the same suites in the test venv but stays uninstalled
+# until a timing run on AC power.
 #
 # 2026-11-16: mlx-vlm 0.8.0 (tagged 2026-11-16 at 2d80954). The pin is 0dad872 on
 # our fork, branch apertus1p5-on-v0.8.0 = the v0.8.0 tag + the same three
@@ -213,7 +229,7 @@ WANT_QWEN=0; WANT_KOLIBRI=0
 PINS=(
   "mlx==0.32.4"
   "mlx-lm==0.31.3"
-  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@0dad8726841914ec4f5a2952998a078e0a736437"
+  "mlx-vlm @ git+https://github.com/here-be-dragons-ai/mlx-vlm@25c51dd89d3eceeaa368f4daac6f4b7b47657fee"
   "transformers==5.15.1"
   "numpy==2.5.2"
   "huggingface-hub==1.27.0"
@@ -359,9 +375,9 @@ def origin(pkg):
 
     A git install is invisible in the version string: main @ 548b09b
     reported "0.7.1", the SAME string as the PyPI 0.7.1 tag that loses exact
-    APC after the first short prompt (#2259), and our 0dad872 reports
-    "0.8.0" like the tag, which has no Apertus 1.5. Since 2026-11-16 mlx-vlm
-    SHOULD show "<- git 0dad872"; a plain "0.8.0" is the tag, not the pin.
+    APC after the first short prompt (#2259), and our 25c51dd reports
+    "0.8.1" like the tag, which has no Apertus 1.5. Since 2026-11-25 mlx-vlm
+    SHOULD show "<- git 25c51dd"; a plain "0.8.1" is the tag, not the pin.
     """
     try:
         dist = m.distribution(pkg)

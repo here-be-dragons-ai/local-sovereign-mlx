@@ -12,6 +12,19 @@
 #
 # venv Python via env:  MLX_VENV_PY=/path/to/.venv/bin/python ./apply-patches.sh
 #
+# STATE 2026-11-25: verified against mlx-vlm 0.8.1 (tag 36494b4) and mlx
+# 0.32.4; installed is 25c51dd = v0.8.1 + the Apertus 1.5 commits (our fork).
+# The same EIGHT patches, all apply without fuzz; the upstream suites give the
+# same counts with and without them (4854 passed, 95 failed, 37 skipped; the
+# 95 are Inkling response-template server tests that need a newer transformers
+# than our 5.15.1 -- green with 5.23.0). Upstream touched ar.py (0010/0014:
+# #2806 drops the prefill step's lazy logits before the APC admission, #2753
+# one generation stream), apc.py (0016: #2771 image hash), prompt_utils.py
+# (0011: #2747 thinking default, new MODEL_CONFIG entries) and
+# server/generation.py (0012: #2760 video timing in the APC key) -- no hunk
+# overlap. base.py (0013), ops/linear.py (0015) and dflash2.py (0041) are
+# byte-identical to 0.8.0. ../docs/upstream-2026-11-25.md.
+#
 # STATE 2026-11-21: EIGHT patches. 0016 is new (apc.py: optional system-RAM
 # probe, see below); the other seven are untouched and mlx-vlm is still
 # 0dad872. The upstream suites were NOT re-run for 0016 -- there is no test
@@ -327,6 +340,13 @@
 #   The default stays upstream behaviour; start-mlx_qwen3.8.sh sets the
 #   variable (APC_SYSTEM_RAM, default 0). The other start scripts do not.
 #   Rollback: APC_SYSTEM_RAM=1
+#   CHECK AFTER EVERY mlx-vlm UPDATE: ./verify-apc-followup.py -- two turns back
+#   to back at 44k -> 48k and 60k -> 64k on a throwaway server, about six
+#   minutes, exit status 1 when a follow-up is rejected or prefilled again.
+#   Since the evening of 2026-11-21 the start script also caps mlx's buffer
+#   cache (MLX_CACHE_LIMIT_GB=2): 8.4 GiB of the 64k peak above were freed
+#   buffers. With the cap that follow-up peaks at 30.8 GiB active+cache, wired
+#   33.5 GiB, and swap does not grow.
 #
 # 0011-role-compat-developer-to-system.patch   (LOCAL, no upstream PR)
 #   Qwen3.8's chat_template accepts only system/user/assistant/tool and calls
@@ -340,13 +360,6 @@
 #   prompt_utils.py before apply_chat_template. Both mappings are the roles'
 #   own history, not a guess: 'developer' is OpenAI's newer name for the system
 #   role, 'function' the predecessor of 'tool'. developer is only remapped when
-#   CHECK AFTER EVERY mlx-vlm UPDATE: ./verify-apc-followup.py -- two turns back
-#   to back at 44k -> 48k and 60k -> 64k on a throwaway server, about six
-#   minutes, exit status 1 when a follow-up is rejected or prefilled again.
-#   Since the evening of 2026-11-21 the start script also caps mlx's buffer
-#   cache (MLX_CACHE_LIMIT_GB=2): 8.4 GiB of the 64k peak above were freed
-#   buffers. With the cap that follow-up peaks at 30.8 GiB active+cache, wired
-#   33.5 GiB, and swap does not grow.
 #   the template does not know the role itself (Qwen3.6 does and treats it as
 #   system). Anything else still throws, deliberately, so real errors stay
 #   visible. A remap logs once at INFO.
