@@ -28,7 +28,7 @@
 #
 # ── ALETORA ─────────────────────────────────────────────────────────────────
 #   Containers under colima reach the host as host.docker.internal. Provider
-#   base: http://host.docker.internal:8889/v1, model: $MODEL_ALIAS.
+#   base: http://host.docker.internal:8888/v1, model: $MODEL_ALIAS.
 #   The colima VM reaches the 127.0.0.1 bind (measured 2026-10-28 on the embed
 #   and rerank servers); 0.0.0.0 is not needed.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ LOG_FILE="${LOG_FILE:-$STATE_DIR/logs/server.log}"
 
 # Not $HOST: zsh sets it to the host name.
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
-PORT="${PORT:-8889}"
+PORT="${PORT:-8888}"
 
 # ── Server parameters ────────────────────────────────────────────────────────
 PREFILL_STEP="${PREFILL_STEP:-2048}"

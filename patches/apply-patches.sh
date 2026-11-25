@@ -340,6 +340,13 @@
 #   prompt_utils.py before apply_chat_template. Both mappings are the roles'
 #   own history, not a guess: 'developer' is OpenAI's newer name for the system
 #   role, 'function' the predecessor of 'tool'. developer is only remapped when
+#   CHECK AFTER EVERY mlx-vlm UPDATE: ./verify-apc-followup.py -- two turns back
+#   to back at 44k -> 48k and 60k -> 64k on a throwaway server, about six
+#   minutes, exit status 1 when a follow-up is rejected or prefilled again.
+#   Since the evening of 2026-11-21 the start script also caps mlx's buffer
+#   cache (MLX_CACHE_LIMIT_GB=2): 8.4 GiB of the 64k peak above were freed
+#   buffers. With the cap that follow-up peaks at 30.8 GiB active+cache, wired
+#   33.5 GiB, and swap does not grow.
 #   the template does not know the role itself (Qwen3.6 does and treats it as
 #   system). Anything else still throws, deliberately, so real errors stay
 #   visible. A remap logs once at INFO.

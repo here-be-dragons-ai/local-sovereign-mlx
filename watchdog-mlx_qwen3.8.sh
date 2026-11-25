@@ -49,13 +49,38 @@ WATCHDOG_POLL="${WATCHDOG_POLL:-10}"
 WATCHDOG_MAX_WAIT="${WATCHDOG_MAX_WAIT:-180}"
 
 SERVER_PID=""
+# Size of the log when the current server was started. Everything before it
+# belongs to an earlier process: without this, the first polls after a restart
+# read the predecessor's last "9x%" line (the new sampler only writes once the
+# model is loaded) and counted it towards the next restart.
+LOG_OFFSET=0
+STARTED_AT=0
+# Consecutive servers that died within WATCHDOG_MIN_UPTIME seconds. A start
+# script that fails its own checks (port taken, model missing) would otherwise
+# be relaunched every few seconds forever.
+WATCHDOG_MIN_UPTIME="${WATCHDOG_MIN_UPTIME:-60}"
+WATCHDOG_MAX_FAST_FAILS="${WATCHDOG_MAX_FAST_FAILS:-3}"
+fast_fails=0
 
 log() { print -r -- "$(date '+%Y-%m-%d %H:%M:%S') [watchdog] $*"; }
 
+# Stops OUR server and nothing else. This used to end in
+# `pkill -f mlx_vlm.server`, which also took down every other mlx-vlm server on
+# the machine (embeddings :8892, reranker :8893, Qwen3.6, Apertus) -- and those
+# are not restarted by anyone. The start script exec's the server, so
+# SERVER_PID is the server itself.
+stop_server() {
+  [[ -n "$SERVER_PID" ]] || return 0
+  kill "$SERVER_PID" 2>/dev/null || true
+  # Give the uvicorn shutdown some time, then go hard.
+  local n=0
+  while kill -0 "$SERVER_PID" 2>/dev/null && (( n < 15 )); do sleep 1; n=$(( n + 1 )); done
+  kill -9 "$SERVER_PID" 2>/dev/null || true
+}
+
 cleanup() {
   log "stopping server (PID ${SERVER_PID:-?})"
-  [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true
-  pkill -f "mlx_vlm.server" 2>/dev/null || true
+  stop_server
   exit 0
 }
 trap cleanup INT TERM
@@ -66,6 +91,8 @@ start_server() {
     log "MEM_PROBE_INTERVAL=0 would disable the sampler; setting 5."
     export MEM_PROBE_INTERVAL=5
   fi
+  LOG_OFFSET=$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)
+  STARTED_AT=$(date +%s)
   "$START_SCRIPT" &
   SERVER_PID=$!
   log "server started (PID $SERVER_PID), threshold ${WATCHDOG_PCT}%"
@@ -78,19 +105,28 @@ start_server() {
 # start-mlx_qwen3.8.sh, and coupling the watchdog to its exact phrasing means a
 # reworded log line silently disables the watchdog -- it would find no value,
 # `continue` on every poll and never restart anything.
+# The log of the current server only (see LOG_OFFSET). A log that shrank was
+# rotated or truncated; read it from the start then.
+current_log() {
+  local size
+  size=$(stat -f %z "$LOG_FILE" 2>/dev/null) || return 1
+  (( size < LOG_OFFSET )) && LOG_OFFSET=0
+  tail -c "+$(( LOG_OFFSET + 1 ))" "$LOG_FILE" 2>/dev/null
+}
+
 current_pct() {
   local line
-  line=$(grep "mem active=" "$LOG_FILE" 2>/dev/null | tail -1) || return 1
+  line=$(current_log | grep "mem active=" | tail -1) || return 1
   [[ -z "$line" ]] && return 1
   print -r -- "$line" | sed -n 's/.*(\([0-9]*\)%[^)]*).*/\1/p'
 }
 
 # Idle: the last logged in_flight count is 0. The server writes it on every
-# request completion.
+# request start and completion; no such line yet means no request yet.
 is_idle() {
   local last
-  last=$(grep -o "in_flight=[0-9]*" "$LOG_FILE" 2>/dev/null | tail -1) || return 1
-  [[ "$last" == "in_flight=0" ]]
+  last=$(current_log | grep -o "in_flight=[0-9]*" | tail -1) || true
+  [[ -z "$last" || "$last" == "in_flight=0" ]]
 }
 
 restart_server() {
@@ -109,11 +145,7 @@ restart_server() {
   done
 
   log "restart"
-  kill "$SERVER_PID" 2>/dev/null || true
-  # Give the uvicorn shutdown some time, then go hard.
-  local n=0
-  while kill -0 "$SERVER_PID" 2>/dev/null && (( n < 15 )); do sleep 1; n=$(( n + 1 )); done
-  pkill -f "mlx_vlm.server" 2>/dev/null || true
+  stop_server
   sleep 3
   start_server
 }
@@ -126,6 +158,16 @@ while true; do
 
   # Server unexpectedly gone (crash, OOM kill)? Bring it back up.
   if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    if (( $(date +%s) - STARTED_AT < WATCHDOG_MIN_UPTIME )); then
+      fast_fails=$(( fast_fails + 1 ))
+    else
+      fast_fails=0
+    fi
+    if (( fast_fails >= WATCHDOG_MAX_FAST_FAILS )); then
+      log "server died ${fast_fails}x within ${WATCHDOG_MIN_UPTIME}s of its start -- giving up."
+      log "run $START_SCRIPT directly to see why."
+      exit 1
+    fi
     log "server process is gone -- restarting"
     sleep 3
     start_server

@@ -220,6 +220,7 @@ A profile sets *defaults* only; individual env variables still win.
 > exact-APC hit used to decode at two thirds of the cold rate (upstream issue
 > `#2210`): Qwen3.5's single-row shortcut ran `extract()` + `merge()` on every
 > full-attention cache, i.e. copied the whole KV prefix on every decode token.
+| `MLX_CACHE_LIMIT_GB` | `2` | cap on mlx's buffer cache (freed Metal buffers, still wired); empty = mlx default, no cap. −6.3 GiB at a 64k follow-up turn, see [docs/memory.md](docs/memory.md) |
 > `0035` (upstream PR `#2336`) borrowed the arrays instead: warm/cold
 > **0.658 -> 0.998** at 26,690 tokens. `0.7.11` (`08d552a2`) keeps decode out
 > of the shortcut altogether, and `0035`/`0036` are retired: measured
@@ -279,6 +280,19 @@ generations at ~10.3k tokens; it is fixed since mlx-vlm 0.6.16.
 The start script can cross-check a YAML config for you:
 
 ```sh
+**Size what the client keeps after a compaction against its fixed prefix.**
+The first prompt after a compaction is the fixed prefix (system prompt, tool
+definitions) + the summary + the turns kept verbatim, and it is a cold prefill:
+the summary sits in front of everything a snapshot could have matched.
+Measured 2026-11-21 on one long pi session (`contextWindow` 65536,
+`reserveTokens` 16384, `keepRecentTokens` 20000, fixed prefix 9.3k tokens):
+the six prompts after a compaction were 35.6k-39.1k tokens against a trigger
+of 49,152, so the next compaction came 2-4 turns later. The summary requests
+and the cold prefills after them (87-95 s each) took 25.4 of 118.8 min of
+server time. A smaller window makes that worse: at 49152 the trigger (32768)
+lies below the prompt a compaction leaves behind. The pi instances run
+`keepRecentTokens` 10000 since then; the effect is not measured yet.
+
 CLIENT_CONFIG=~/path/to/config.yaml ./start-mlx_qwen3.8.sh
 ```
 
@@ -504,10 +518,18 @@ What changed on 2026-11-21 (mlx-vlm unchanged at `0dad872`):
   upstream). Same two requests back to back: 47,908-token follow-up HTTP 500
   before, 14.1 s with 43,919 cached tokens after; a 63,998-token follow-up
   passes too.
-- **64k is the edge of this machine**, patch or not: wired peaked at 40.4 GiB,
+- **64k was the edge of this machine**, patch or not: wired peaked at 40.4 GiB,
   `free + inactive` fell to 1.07 GiB and swap grew by 3.7 GB during that
   follow-up, with a VM and Safari running. Measurements and what the patch
-  gives up are in `patches/apply-patches.sh`.
+  gives up are in `patches/apply-patches.sh`. 8.4 GiB of that peak were freed
+  buffers in mlx's cache; the start script caps the cache at 2 GiB since the
+  same evening (`MLX_CACHE_LIMIT_GB`), which leaves wired at 33.5 GiB and swap
+  where it was.
+- **`verify-apc-followup.py` is the check for it** after every mlx-vlm update:
+  two turns back to back at 44k → 48k and 60k → 64k on a throwaway server,
+  about six minutes. The suites, the greedy hash and the cold/warm timing at
+  28k passed on `0.7.12` and on `0.8.0`; none of them sends a second turn at
+  that size.
 
 What changed on 2026-10-29, moving to the `0.7.11` release (+ Apertus 1.5):
 
@@ -760,6 +782,7 @@ clear the SSD tier, and only then touch `APC_ENTRIES` or `context_length`.
 
 ---
 
+| `verify-apc-followup.py` | two turns back to back at 44k → 48k and 60k → 64k: is the follow-up admitted and served from the snapshot (patch `0016`); run after every mlx-vlm update |
 ## Where the numbers come from
 
 All values marked "measured" come from an **M5 Pro / 48 GB** machine (mlx-vlm

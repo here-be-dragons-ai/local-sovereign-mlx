@@ -542,6 +542,15 @@ LOG_PROGRESS="${LOG_PROGRESS:-10}"
 # Seconds between two memory measurements in the log; 0 disables the sampler.
 # Rationale and implementation are further down, at the exec.
 _MEM_PROBE_INTERVAL="${MEM_PROBE_INTERVAL:-5}"
+# Upper bound in GiB for mlx's buffer cache (freed Metal buffers kept for
+# reuse); empty = mlx default, which is no bound at all. Rationale and
+# measurements are further down, at the exec, next to the memory sampler that
+# applies it. ${VAR-...} without a colon: an EMPTY value is the rollback.
+MLX_CACHE_LIMIT_GB="${MLX_CACHE_LIMIT_GB-2}"
+if [[ -n "$MLX_CACHE_LIMIT_GB" && ! "$MLX_CACHE_LIMIT_GB" =~ '^[0-9]+([.][0-9]+)?$' ]]; then
+  echo "ERROR: MLX_CACHE_LIMIT_GB='$MLX_CACHE_LIMIT_GB' is not a number (GiB, e.g. 2 or 0.5; empty = mlx default)" >&2
+  exit 1
+fi
 
 # ── KV quantisation ───────────────────────────────────────────────────────────
 # OFF BY DEFAULT, but the most important lever on this machine: KV_BITS=8 halves
@@ -1210,6 +1219,7 @@ else
 fi
 echo "  KV cache :  ${KV_BITS:-f16 unquantized} -> ${KV_KIB} KiB/token"
 echo "  Mem probe:  $([[ "$_MEM_PROBE_INTERVAL" == "0" ]] && echo "OFF" || echo "every ${_MEM_PROBE_INTERVAL}s to the log (MEM_PROBE_INTERVAL=0 disables)")"
+echo "  MLX cache:  $([[ -n "$MLX_CACHE_LIMIT_GB" ]] && echo "capped at ${MLX_CACHE_LIMIT_GB} GiB (MLX_CACHE_LIMIT_GB= restores the mlx default)" || echo "mlx default, no effective cap (MLX_CACHE_LIMIT_GB=<GiB> sets one)")"
 echo "  Prefill  :  chunk $PREFILL_STEP   slots: $MAX_NUM_SEQS   vision cache: $VISION_CACHE$_PREFILL_NOTE"
 echo "  Full-attn:  $FUSED_STATUS"
 echo "  Q-linears:  $QLIN_STATUS"
@@ -1395,6 +1405,40 @@ cd "$MODELS_ROOT"
 # update.
 # Disable: MEM_PROBE_INTERVAL=0 (the value is set above, near LOG_PROGRESS)
 #
+# ── Buffer cache limit (MLX_CACHE_LIMIT_GB, default 2) ───────────────────────
+# mlx keeps freed Metal buffers in a cache and hands them out again. The cache
+# limit defaults to the memory limit (45.6 GiB here, above the working set), so
+# nothing bounds it short of gc_limit_. Cached buffers are wired like live
+# ones. mlx-vlm clears the cache at a few points of a request, and between
+# those it grows: 5-7.5 GiB in a pi session on 2026-11-21 (active 24.8 GiB),
+# 8.4 GiB during a 64k follow-up turn.
+# MEASURED 2026-11-21 with ./verify-apc-followup.py on a throwaway server, one
+# restart per arm, MEM_PROBE_INTERVAL=1, 48 GB / 40 GiB working set:
+#                              mlx default      2 GiB       4 GiB
+#   44k cold prefill             116.2 s       110.5 s     115.1 s
+#   48k follow-up, wall           26.8 s        24.9 s      25.0 s
+#   48k decode (200 tokens)       18.0 t/s      18.6 t/s    18.6 t/s
+#   60k cold prefill             170.0 s       166.5 s        (*)
+#   64k follow-up, wall           28.7 s        27.8 s        (*)
+#   64k decode (200 tokens)       16.1 t/s      16.8 t/s      (*)
+#   cache, max                    8.42 GiB      2.01 GiB    4.01 GiB
+#   active + cache, max          37.02 GiB     30.76 GiB   32.62 GiB
+#   wired (vm_stat), max         40.21 GiB     33.45 GiB   35.18 GiB
+#   free + inactive, min          1.21 GiB      4.49 GiB    3.82 GiB
+#   swap used over the arm     6.7 -> 10.9 GB  10.8 -> 9.4  9.4 -> 9.2
+# mlx's peak counter (live memory only) reads 30.76 GiB in every arm: the limit
+# takes nothing from the computation, it returns what was already freed. No
+# timing got worse at 2 GiB, and the 64k follow-up no longer drives the machine
+# into swap.
+# (*) NOT COMPARABLE, and neither is the second default arm that closed the
+# run (44k cold 168.1 s): the prefill rate fell from ~400 to ~200 tok/s in the
+# middle of the third arm and stayed there. The battery went from 19% to 7%
+# during the run although the machine was on its adapter. The memory rows do
+# not depend on that; the timing rows rest on the first two arms, run back to
+# back before it. Repeat the timing on a charged battery before quoting it.
+# Below 2 GiB is not measured, and neither is any of this on 32 GB.
+# Rollback: MLX_CACHE_LIMIT_GB= ./start-mlx_qwen3.8.sh   (empty = mlx default)
+#
 # NOTE FOR ANYONE REWORDING THE LINE BELOW: watchdog-mlx_qwen3.8.sh parses it.
 # It matches "(NN%" up to the closing parenthesis and deliberately ignores the
 # wording, so rephrasing is safe -- but the percentage must stay inside
@@ -1442,6 +1486,15 @@ def _sample(interval, ws):
         time.sleep(interval)
 
 
+_cl = os.environ.get("MLX_CACHE_LIMIT_GB", "")
+if _cl != "":
+    # print, not logging: mlx_vlm has not configured logging yet (see _sample).
+    _prev = mx.set_cache_limit(int(float(_cl) * _GIB))
+    print(
+        "mlx cache limit: %.2f GiB (was %.2f GiB)" % (float(_cl), _prev / _GIB),
+        flush=True,
+    )
+
 _iv = float(os.environ.get("MEM_PROBE_INTERVAL", "5") or 0)
 if _iv > 0:
     threading.Thread(
@@ -1453,8 +1506,12 @@ runpy.run_module("mlx_vlm.server", run_name="__main__")
 PY
 )
 
-if [[ "$_MEM_PROBE_INTERVAL" != "0" ]]; then
+# The boot snippet carries both the sampler and the cache limit, so it runs when
+# either is wanted. MEM_PROBE_INTERVAL is exported in both cases: the snippet
+# defaults a missing value to 5 and would start the sampler against a 0.
+if [[ "$_MEM_PROBE_INTERVAL" != "0" || -n "$MLX_CACHE_LIMIT_GB" ]]; then
   export MEM_PROBE_INTERVAL="$_MEM_PROBE_INTERVAL"
+  export MLX_CACHE_LIMIT_GB
   exec "$VENV_PY" -c "$_MEM_BOOT" "${args[@]}" > >(tee -a "$LOG_FILE") 2>&1
 else
   exec "$VENV_PY" -m mlx_vlm.server "${args[@]}" > >(tee -a "$LOG_FILE") 2>&1
